@@ -1,0 +1,246 @@
+name: Alauda Build Jaeger
+
+on:
+  pull_request:
+    paths:
+      - "cmd/jaeger/**"
+      - "cmd/es-rollover/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/alauda-build-jaeger.yaml"
+  push:
+    tags:
+      - "v*-r*"
+  workflow_dispatch:
+    inputs:
+      epoch:
+        description: Release epoch
+        required: true
+        type: number
+        default: 0
+
+run-name: >-
+  ${{ github.event_name == 'push' && format('Release {0}', github.ref_name) ||
+      github.event_name == 'workflow_dispatch' && format('Manual build (epoch={0})', inputs.epoch) ||
+      format('PR #{0}', github.event.pull_request.number) }}
+
+env:
+  GOPROXY: "https://goproxy.cn,direct"
+  PLATFORMS: linux/amd64,linux/arm64
+  IMG_PREFIX: build-harbor.alauda.cn/asm
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true" # 强制使用 Node.js 24 运行 Actions
+
+permissions:
+  contents: read
+
+jobs:
+  determine-version:
+    name: Determine Jaeger version
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.image-version.outputs.tag }}
+      jaeger_version: ${{ steps.image-version.outputs.jaeger_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine image version
+        id: image-version
+        run: |
+          # 从 git tag 中提取 Jaeger 版本
+          JAEGER_VERSION=$(scripts/utils/compute-version.sh)
+          if [ "$JAEGER_VERSION" = "0.0.0" ]; then
+            echo "::error::无法确定 Jaeger 版本，请确保存在有效的 git tag"
+            exit 1
+          fi
+          # 去除 v 前缀用于镜像 tag
+          JAEGER_VERSION_NO_V=${JAEGER_VERSION#v}
+          echo "jaeger_version=${JAEGER_VERSION}" >> $GITHUB_OUTPUT
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${JAEGER_VERSION_NO_V}-r${{ inputs.epoch }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            REF_TAG=${{ github.ref_name }}
+            EPOCH=$(echo $REF_TAG | sed 's/.*-r//')
+            TAG="${JAEGER_VERSION_NO_V}-r${EPOCH}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            TAG="${JAEGER_VERSION_NO_V}-pr.${{ github.event.pull_request.number }}.${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  build-binaries:
+    name: Build jaeger and es-rollover binaries - ${{ matrix.arch }}
+    runs-on:
+      [self-hosted, linux, "${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}"]
+    needs: [determine-version]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+
+    env:
+      http_proxy: ${{ vars.http_proxy }}
+      https_proxy: ${{ vars.https_proxy }}
+      no_proxy: ${{ vars.no_proxy }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch git tags
+        run: |
+          git fetch --prune --unshallow --tags 2>/dev/null || git fetch --prune --tags
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "~1.26.1"
+
+      # jaeger-query 包含 UI，提前统一安装，对 es-rollover 构建无影响
+      - name: Setup Node.js version
+        uses: ./.github/actions/setup-node.js
+
+      - name: Install CI tools
+        run: make install-ci
+
+      - name: Build jaeger binary
+        run: |
+          GOOS=linux GOARCH=${{ matrix.arch }} make build-jaeger \
+            -e LD_EXTRAFLAGS="${LD_EXTRAFLAGS}"
+        env:
+          SKIP_DEBUG_BINARIES: "1"
+          LD_EXTRAFLAGS: ${{ vars.LD_EXTRAFLAGS }}
+
+      - name: Build es-rollover binary
+        run: |
+          GOOS=linux GOARCH=${{ matrix.arch }} make build-es-rollover \
+            -e LD_EXTRAFLAGS="${LD_EXTRAFLAGS}"
+        env:
+          SKIP_DEBUG_BINARIES: "1"
+          LD_EXTRAFLAGS: ${{ vars.LD_EXTRAFLAGS }}
+
+      - name: Upload jaeger binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jaeger-linux-${{ matrix.arch }}
+          path: cmd/jaeger/jaeger-linux-${{ matrix.arch }}
+          retention-days: 1
+
+      - name: Upload es-rollover binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: es-rollover-linux-${{ matrix.arch }}
+          path: cmd/es-rollover/es-rollover-linux-${{ matrix.arch }}
+          retention-days: 1
+
+  build-and-push-images:
+    name: Build ${{ matrix.component }} image - ${{ matrix.arch }}
+    runs-on:
+      [self-hosted, linux, "${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}"]
+    needs: [determine-version, build-binaries]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [jaeger, es-rollover]
+        arch: [amd64, arm64]
+
+    env:
+      http_proxy: ${{ vars.http_proxy }}
+      https_proxy: ${{ vars.https_proxy }}
+      no_proxy: ${{ vars.no_proxy }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to build-harbor.alauda.cn
+        uses: docker/login-action@v3
+        with:
+          registry: build-harbor.alauda.cn
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.component }}-linux-${{ matrix.arch }}
+          path: cmd/${{ matrix.component }}/
+
+      - name: Prepare build context
+        run: |
+          chmod +x cmd/${{ matrix.component }}/${{ matrix.component }}-linux-${{ matrix.arch }}
+
+      - name: Determine platform tag
+        id: platform-tag
+        run: |
+          echo "tag=${{ needs.determine-version.outputs.tag }}-${{ matrix.arch }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push ${{ matrix.component }} image
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/${{ matrix.arch }}
+          context: cmd/${{ matrix.component }}
+          file: cmd/${{ matrix.component }}/Dockerfile
+          push: true
+          # debug_image 添加默认值，避免构建 release target 时报错（下面的 target 已经指定 release，不会构建 debug 镜像）
+          build-args: |
+            base_image=build-harbor.alauda.cn/mlops/static@sha256:d2185a95c5e553a32e4f82d8138ccb78b57242f987985bd089ae2fb3c21e18d0
+            debug_image=scratch
+            TARGETARCH=${{ matrix.arch }}
+          target: release
+          tags: |
+            ${{ env.IMG_PREFIX }}/${{ matrix.component }}:${{ steps.platform-tag.outputs.tag }}
+        env:
+          DOCKER_BUILD_SUMMARY: false
+
+  merge-manifests:
+    name: Merge ${{ matrix.component }} image manifests
+    runs-on: [self-hosted, linux]
+    needs: [determine-version, build-and-push-images]
+
+    strategy:
+      matrix:
+        component: [jaeger, es-rollover]
+
+    env:
+      http_proxy: ${{ vars.http_proxy }}
+      https_proxy: ${{ vars.https_proxy }}
+      no_proxy: ${{ vars.no_proxy }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup crane
+        uses: imjasonh/setup-crane@v0.4
+        with:
+          version: latest-release
+
+      - name: Login to build-harbor.alauda.cn
+        uses: docker/login-action@v3
+        with:
+          registry: build-harbor.alauda.cn
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Merge image manifests and push
+        env:
+          TAG: ${{ needs.determine-version.outputs.tag }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          crane index append \
+            -m "${IMG_PREFIX}/${COMPONENT}:${TAG}-amd64" \
+            -m "${IMG_PREFIX}/${COMPONENT}:${TAG}-arm64" \
+            -t "${IMG_PREFIX}/${COMPONENT}:${TAG}"

@@ -12,6 +12,6 @@ define buildinfo
   $(JAEGER_IMPORT_PATH)/internal/version.$(1)=$(2)
 endef
 define buildinfoflags
-  -ldflags "-X $(call buildinfo,commitSHA,$(GIT_SHA)) -X $(call buildinfo,latestVersion,$(GIT_CLOSEST_TAG)) -X $(call buildinfo,date,$(DATE))"
+  -ldflags "-X $(call buildinfo,commitSHA,$(GIT_SHA)) -X $(call buildinfo,latestVersion,$(GIT_CLOSEST_TAG)) -X $(call buildinfo,date,$(DATE)) $(LD_EXTRAFLAGS)"
 endef
 BUILD_INFO=$(call buildinfoflags)
