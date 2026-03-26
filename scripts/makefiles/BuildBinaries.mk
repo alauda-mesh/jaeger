@@ -67,8 +67,8 @@ build-es-index-cleaner:
 	$(call GOBUILD,es-index-cleaner) -o ./cmd/es-index-cleaner/es-index-cleaner-$(GOOS)-$(GOARCH) ./cmd/es-index-cleaner/
 
 .PHONY: build-es-rollover
-build-es-rollover:
-	$(call GOBUILD,es-rollover) -o ./cmd/es-rollover/es-rollover-$(GOOS)-$(GOARCH) ./cmd/es-rollover/
+build-es-rollover: BIN_NAME = es-rollover
+build-es-rollover: _build-a-binary-es-rollover$(SUFFIX)-$(GOOS)-$(GOARCH)
 
 # Requires variables: $(BIN_NAME) $(BIN_PATH) $(GO_TAGS) $(DISABLE_OPTIMIZATIONS) $(SUFFIX) $(GOOS) $(GOARCH) $(BUILD_INFO)
 # Other targets can depend on this one but with a unique suffix to ensure it is always executed.

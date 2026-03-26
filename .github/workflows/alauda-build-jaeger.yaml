@@ -41,7 +41,6 @@ jobs:
 
     outputs:
       tag: ${{ steps.image-version.outputs.tag }}
-      jaeger_version: ${{ steps.image-version.outputs.jaeger_version }}
 
     steps:
       - name: Checkout repository
@@ -59,9 +58,10 @@ jobs:
             echo "::error::无法确定 Jaeger 版本，请确保存在有效的 git tag"
             exit 1
           fi
-          # 去除 v 前缀用于镜像 tag
+          # 去除 v 前缀和 -rN 后缀，统一为纯语义版本号（如 v2.16.0-r1 → 2.16.0）
           JAEGER_VERSION_NO_V=${JAEGER_VERSION#v}
-          echo "jaeger_version=${JAEGER_VERSION}" >> $GITHUB_OUTPUT
+          JAEGER_VERSION_NO_V=${JAEGER_VERSION_NO_V%%-r*}
+          echo "::notice::JAEGER_VERSION_NO_V: ${JAEGER_VERSION_NO_V}"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${JAEGER_VERSION_NO_V}-r${{ inputs.epoch }}"
@@ -72,6 +72,8 @@ jobs:
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             TAG="${JAEGER_VERSION_NO_V}-pr.${{ github.event.pull_request.number }}.${{ github.run_number }}"
           fi
+
+          echo "::notice::镜像 tag: ${TAG}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
   build-binaries:
