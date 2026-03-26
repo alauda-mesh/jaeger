@@ -16,3 +16,17 @@
 | es-rollover | `build-harbor.alauda.cn/asm/es-rollover` | ES 索引滚动工具        |
 
 镜像 tag 示例：`2.16.0-r0`
+
+## 本地构建
+
+```bash
+# 构建 jaeger（含 UI）
+make build-jaeger
+# 验证构建产物
+./cmd/jaeger/jaeger-$(go env GOOS)-$(go env GOARCH) --help
+
+# 构建 es-rollover
+make build-es-rollover
+# 验证构建产物
+./cmd/es-rollover/es-rollover-$(go env GOOS)-$(go env GOARCH) --help
+```
