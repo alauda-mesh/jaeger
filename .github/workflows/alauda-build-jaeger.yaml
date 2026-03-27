@@ -29,7 +29,6 @@ env:
   GOPROXY: "https://goproxy.cn,direct"
   PLATFORMS: linux/amd64,linux/arm64
   IMG_PREFIX: build-harbor.alauda.cn/asm
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true" # 强制使用 Node.js 24 运行 Actions
 
 permissions:
   contents: read
@@ -44,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -94,7 +93,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: true
           fetch-depth: 0
@@ -105,7 +104,7 @@ jobs:
           git fetch --prune --unshallow --tags 2>/dev/null || git fetch --prune --tags
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "~1.26.1"
           cache: false
@@ -134,14 +133,14 @@ jobs:
           LD_EXTRAFLAGS: ${{ vars.LD_EXTRAFLAGS }}
 
       - name: Upload jaeger binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jaeger-linux-${{ matrix.arch }}
           path: cmd/jaeger/jaeger-linux-${{ matrix.arch }}
           retention-days: 1
 
       - name: Upload es-rollover binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: es-rollover-linux-${{ matrix.arch }}
           path: cmd/es-rollover/es-rollover-linux-${{ matrix.arch }}
@@ -166,17 +165,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Login to build-harbor.alauda.cn
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: build-harbor.alauda.cn
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Download binary artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.component }}-linux-${{ matrix.arch }}
           path: cmd/${{ matrix.component }}/
@@ -197,7 +196,7 @@ jobs:
           fi
 
       - name: Build and push ${{ matrix.component }} image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           platforms: linux/${{ matrix.arch }}
           context: cmd/${{ matrix.component }}
@@ -206,7 +205,6 @@ jobs:
           # debug_image 添加默认值，避免构建 release target 时报错（下面的 target 已经指定 release，不会构建 debug 镜像）
           build-args: |
             base_image=build-harbor.alauda.cn/mlops/static@sha256:d2185a95c5e553a32e4f82d8138ccb78b57242f987985bd089ae2fb3c21e18d0
-            debug_image=scratch
             TARGETARCH=${{ matrix.arch }}
           target: release
           tags: |
@@ -230,7 +228,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup crane
         uses: imjasonh/setup-crane@v0.4
@@ -238,7 +236,7 @@ jobs:
           version: latest-release
 
       - name: Login to build-harbor.alauda.cn
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: build-harbor.alauda.cn
           username: ${{ secrets.HARBOR_USERNAME }}
