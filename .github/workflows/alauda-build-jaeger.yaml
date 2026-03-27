@@ -108,6 +108,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "~1.26.1"
+          cache: false
 
       # jaeger-query 包含 UI，提前统一安装，对 es-rollover 构建无影响
       - name: Setup Node.js version
