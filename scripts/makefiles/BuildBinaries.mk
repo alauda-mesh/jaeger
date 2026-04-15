@@ -63,8 +63,8 @@ build-esmapping-generator:
 	$(call GOBUILD,esmapping-generator) -o ./cmd/esmapping-generator/esmapping-generator-$(GOOS)-$(GOARCH) ./cmd/esmapping-generator/
 
 .PHONY: build-es-index-cleaner
-build-es-index-cleaner:
-	$(call GOBUILD,es-index-cleaner) -o ./cmd/es-index-cleaner/es-index-cleaner-$(GOOS)-$(GOARCH) ./cmd/es-index-cleaner/
+build-es-index-cleaner: BIN_NAME = es-index-cleaner
+build-es-index-cleaner: _build-a-binary-es-index-cleaner$(SUFFIX)-$(GOOS)-$(GOARCH)
 
 .PHONY: build-es-rollover
 build-es-rollover: BIN_NAME = es-rollover
