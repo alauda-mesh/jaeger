@@ -10,10 +10,11 @@
 
 构建产物包含以下组件的多架构镜像（linux/amd64, linux/arm64）：
 
-| 组件        | 镜像地址                                 | 说明                   |
-| ----------- | ---------------------------------------- | ---------------------- |
-| jaeger      | `build-harbor.alauda.cn/asm/jaeger`      | Jaeger 主服务（含 UI） |
-| es-rollover | `build-harbor.alauda.cn/asm/es-rollover` | ES 索引滚动工具        |
+| 组件             | 镜像地址                                            | 说明                   |
+| ---------------- | --------------------------------------------------- | ---------------------- |
+| jaeger           | `build-harbor.alauda.cn/asm/jaeger`                 | Jaeger 主服务（含 UI） |
+| es-rollover      | `build-harbor.alauda.cn/asm/jaeger-es-rollover`     | ES 索引滚动工具        |
+| es-index-cleaner | `build-harbor.alauda.cn/asm/jaeger-es-index-cleaner`| ES 索引清理工具        |
 
 镜像 tag 示例：`2.16.0-r0`
 
@@ -29,4 +30,9 @@ make build-jaeger
 make build-es-rollover
 # 验证构建产物
 ./cmd/es-rollover/es-rollover-$(go env GOOS)-$(go env GOARCH) --help
+
+# 构建 es-index-cleaner
+make build-es-index-cleaner
+# 验证构建产物
+./cmd/es-index-cleaner/es-index-cleaner-$(go env GOOS)-$(go env GOARCH) --help
 ```
