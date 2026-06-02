@@ -107,7 +107,7 @@ opentelemetry-operator 仓库:  alauda-release 流水线（手动填入 jaeger_t
 以 Helm chart + `ModulePlugin` CR 的形式交付（与 OLM 在 ACP 上是**两套不同的插件子系统**）：
 
 - **`Chart.yaml`** / **`module-plugin.yaml`**：chart 元信息与 `cluster.alauda.io/v1alpha1` 的 `ModulePlugin` 声明（插件身份、展示名、版本等）。
-- **`values.yaml` 的 `global.images`**：声明随插件下发的镜像清单（Jaeger 场景即 `jaeger` / `jaeger-es-rollover` / `jaeger-es-index-cleaner`，可选 `oauth2-proxy`）。`repository` 必须是**不含 registry 前缀**的相对路径。
+- **`values.yaml` 的 `global.images`**：声明随插件下发的镜像清单——Jaeger 场景应包含 `jaeger` / `jaeger-es-rollover` / `jaeger-es-index-cleaner`，**以及 `oauth2-proxy`**。`oauth2-proxy` 是 Jaeger UI 的认证 sidecar（部署时作为 Jaeger 实例 `OpenTelemetryCollector` 的 `additionalContainers` 注入，为 Jaeger UI 对接 ACP 授权），功能上归属 Jaeger，**应随 Jaeger 插件下发**；它是上游同步的第三方镜像（`thirdparty: true`），本身不由 `jaeger` 仓库构建，但这不影响它在打包归属上属于 Jaeger。`repository` 必须是**不含 registry 前缀**的相对路径。
 - **`scripts/plugin-config.yaml`**：`valuesTemplates` 在安装时用 `<< .RegistryAddress >>` 把 registry 重写为**当前集群的内置镜像仓库地址**。
 - **`templates/_helpers.tpl` + 占位 ConfigMap**：把镜像拼成完整可拉取地址，安装后通过 ConfigMap（`data.registry` / `data.images`）暴露给使用方引用。
 - **打包上架**：`helm package`/`helm push` 推 chart 到 OCI，再用 `violet create`/`package`/`push` 把 chart 与镜像打成插件包上架 ACP；安装时镜像被同步进集群内置仓库。
@@ -126,7 +126,7 @@ jaeger 仓库 ──打 tag──> CI 构建 jaeger / es-rollover / es-index-cle
     ╔══════════════════════════╗        ╔══════════════════════════════════════╗
     ║ 插件：Alauda Build of      ║        ║ 插件：Alauda Build of OpenTelemetry v2 ║
     ║       Jaeger v2           ║        ║ = operator（部署 Jaeger 的控制器）       ║
-    ║ = 仅 jaeger ×3 镜像清单     ║        ║   + collector / oauth2-proxy 镜像       ║
+    ║ = jaeger×3 + oauth2-proxy ║        ║   + collector 镜像（不含 jaeger/oauth2）║
     ╚══════════════════════════╝        ╚══════════════════════════════════════╝
               │ 安装时同步镜像到内置仓库            │ 提供 OpenTelemetryCollector CRD + 控制器
               │ ConfigMap 暴露镜像地址             │
@@ -137,7 +137,7 @@ jaeger 仓库 ──打 tag──> CI 构建 jaeger / es-rollover / es-index-cle
 
 ### 3.3 发版结果
 
-- **两个插件**：`Alauda Build of OpenTelemetry v2`（去掉 Jaeger 镜像）+ `Alauda Build of Jaeger v2`（Jaeger 镜像）。
+- **两个插件**：`Alauda Build of OpenTelemetry v2`（仅 operator + collector 镜像）+ `Alauda Build of Jaeger v2`（`jaeger` ×3 **加 `oauth2-proxy`**，即部署 Jaeger 实例及其 UI 认证 sidecar 所需的全部镜像）。
 - **两条发版流程**：各自独立的版本号与打包/上架流水线。
 - 用户需**分别安装两个插件**才能部署 Jaeger；两个插件分属 OLM 与 ModulePlugin 两套子系统，依赖关系无法声明式表达。
 
