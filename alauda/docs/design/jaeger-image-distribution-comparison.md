@@ -10,17 +10,49 @@
 
 ## 1. 背景
 
+### 1.1 Jaeger 镜像如何构建
+
 `./jaeger/` 仓库（Alauda 的 Jaeger 发行版）在打 `vx.y.z-rn`（如 `v2.16.0-r0`）tag 后，由 CI 构建并推送三个多架构镜像（`linux/amd64`、`linux/arm64`）：
 
 | 组件 | 镜像地址 | 说明 |
 | --- | --- | --- |
-| jaeger | `build-harbor.alauda.cn/asm/jaeger` | Jaeger 主服务（含 UI） |
-| es-rollover | `build-harbor.alauda.cn/asm/jaeger-es-rollover` | ES 索引滚动工具 |
+| jaeger | `build-harbor.alauda.cn/asm/jaeger` | Jaeger 主服务（含 UI），基于 OpenTelemetry Collector 框架构建的自定义二进制 |
+| es-rollover | `build-harbor.alauda.cn/asm/jaeger-es-rollover` | ES 索引滚动/初始化工具 |
 | es-index-cleaner | `build-harbor.alauda.cn/asm/jaeger-es-index-cleaner` | ES 索引清理工具 |
 
-`jaeger/` 仓库本身**只负责构建镜像**，并不负责"把镜像送进客户集群"。真正决定这些镜像如何随产品交付、如何同步到 ACP 集群内置镜像仓库、以何种版本节奏发布的，是下游的封装/发版设计。本文对比的正是这一层。
+`jaeger/` 仓库本身**只负责构建镜像**，并不负责"把镜像送进客户集群"，也不负责"部署 Jaeger 实例"。本文对比的，是镜像**如何随产品交付、如何进入 ACP 集群内置镜像仓库、以何种版本节奏发布**这一层设计。
 
-> 关键事实：`opentelemetry-operator` 仓库中，只有 `RELATED_IMAGE_COLLECTOR` 被作为 manager 容器的环境变量消费（即 Operator 运行时会用它拉起 Collector）。Jaeger 三个镜像**仅出现在 CSV 的顶层 `relatedImages` 列表中**，Operator 自身并不部署 Jaeger。也就是说，Jaeger 镜像是"搭车"进入 Operator bundle 的镜像清单，主要服务于**离线镜像同步（mirror）与 bundle 镜像清单声明**，而非由 Operator 拉起。
+### 1.2 关键架构事实：Jaeger 如何被部署（决定全文的核心前提）
+
+> **Jaeger v2 实例是以 `OpenTelemetryCollector` 自定义资源的形式、由 `Alauda Build of OpenTelemetry v2` 插件中的 `opentelemetry-operator` 部署和管理的。**
+
+参见 `distributed-tracing-docs/docs/en/installing/installing-distributed-tracing.mdx`：部署 Jaeger 时创建的并不是某个 `Jaeger` CRD，而是一个 `kind: OpenTelemetryCollector` 资源，把 `spec.image` 指向 Jaeger 镜像：
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector      # 来自 opentelemetry-operator 的 CRD
+metadata:
+  name: jaeger
+spec:
+  image: "${JAEGER_IMAGE}"        # 不是默认 collector 镜像，而是基于 Collector 框架构建的 Jaeger 二进制
+  mode: deployment
+  config: { ... jaeger_storage / jaeger_query 扩展 ... }
+```
+
+由此推出本文最重要的一条**非对称依赖关系**：
+
+- **OTel 插件可以单独使用**——只部署 OpenTelemetry Collector、不部署 Jaeger，是合法形态。
+- **Jaeger 无法脱离 OTel 插件存在**——`OpenTelemetryCollector` CRD 及其控制器都由 `opentelemetry-operator` 提供；没有该 operator，就无法部署 Jaeger 实例。因此 **Jaeger 在"部署"层面强依赖 OTel 插件**。
+- **要区分"部署依赖"与"数据通路集成"**：Jaeger 实例自带 OTLP receiver（`4317/4318`），应用可以**直连 Jaeger** 上报；也可以在前面再放一个 OpenTelemetry Collector 做汇聚再转发给 Jaeger。是否集成 Collector 是**可选的使用场景**；而由 operator 完成的**部署，是必须的依赖**。本文讨论的依赖均指后者。
+
+> 进一步地，现状部署文档**直接从 operator 的 CSV `relatedImages` 读取 Jaeger 镜像地址**再填入 `OpenTelemetryCollector`：
+> ```bash
+> JAEGER_RELATED_IMAGES=$(kubectl get csv -n opentelemetry-operator2 ... -o jsonpath='{.spec.relatedImages}')
+> export JAEGER_IMAGE=$(echo "$JAEGER_RELATED_IMAGES" | jq -r '.[]|select(.name=="component.jaeger").image')
+> export JAEGER_ES_ROLLOVER_IMAGE=$(... select(.name=="component.jaeger-es-rollover") ...)
+> export JOAUTH2_PROXY_IMAGE=$(... select(.name=="component.oauth2-proxy") ...)
+> ```
+> 也就是说，在方案一中 `relatedImages` **不只是离线 mirror 清单，更是部署时取用镜像地址的事实来源**——部署 Jaeger 用的镜像与部署它的 operator，本就同源于同一个 CSV。
 
 ---
 
@@ -28,78 +60,86 @@
 
 ### 2.1 机制
 
-OTel Operator v2 以 **OLM Operator**（`operators.coreos.com/v1alpha1`，CSV + bundle）形态交付。Jaeger 镜像通过 OLM 原生的 `relatedImages` 机制，声明在 Operator 的 CSV 里：
+OTel Operator v2 以 **OLM Operator**（`operators.coreos.com/v1alpha1`，CSV + bundle）形态交付。Jaeger 镜像通过 OLM 原生的 `relatedImages` 机制声明在 Operator 的 CSV 里：
 
 - **`opentelemetry-operator/alauda/alauda-csv.yaml`**：作为 patch 模板，在 `relatedImages` 中声明 `component.jaeger`、`component.jaeger-es-rollover`、`component.jaeger-es-index-cleaner`，镜像 tag 用 `JAEGER-TAG-PLACEHOLDER` 占位（三个 Jaeger 镜像共用同一个 Jaeger tag）。
 - **`opentelemetry-operator/hack/alauda-patch.sh`**：对社区版 bundle CSV 做后处理——合并 `alauda-csv.yaml` 的覆盖项、追加 manager 环境变量，并把 `OPENTELEMETRY-OPERATOR2-TAG` / `OPENTELEMETRY-COLLECTOR-TAG` / `JAEGER-TAG` / `OAUTH2-PROXY-TAG` 四个占位符替换为发版时传入的实际 tag。
-- **`.github/workflows/alauda-release.yaml`**：单一的 `workflow_dispatch` 流水线，入参包含 `jaeger_tag`（如 `2.16.0-r2`）。流水线一次性完成：构建 Operator 镜像 → `make bundle` 生成 OLM bundle → `make alauda-patch` 注入 Jaeger 等 tag → 构建并推送 bundle 镜像 → 创建 GitHub Release `Alauda Build of OpenTelemetry vX`。
+- **`.github/workflows/alauda-release.yaml`**：单一的 `workflow_dispatch` 流水线，入参包含 `jaeger_tag`（如 `2.16.0-r2`）。一次性完成：构建 Operator 镜像 → `make bundle` 生成 OLM bundle → `make alauda-patch` 注入 Jaeger 等 tag → 构建并推送 bundle 镜像 → 创建 GitHub Release `Alauda Build of OpenTelemetry vX`。
+
+部署阶段：管理员按文档从该 CSV 的 `relatedImages` 取出 `JAEGER_IMAGE` 等地址，填入 `OpenTelemetryCollector` CR 的 `spec.image`，由 operator 据此拉起 Jaeger 实例；`es-rollover` 作为一次性 `Job`（init 索引）、`oauth2-proxy` 作为 Jaeger UI 的认证 sidecar，镜像同样取自 `relatedImages`。
 
 ### 2.2 数据流
 
 ```
 jaeger 仓库 ──打 tag──> CI 构建 jaeger / es-rollover / es-index-cleaner 镜像
-                                          │（镜像已在 harbor，仅得到一个 tag 字符串）
+                                          │（得到一个 tag 字符串）
                                           ▼
 opentelemetry-operator 仓库:  alauda-release 流水线（手动填入 jaeger_tag）
-   alauda-csv.yaml ──patch──> CSV.relatedImages 注入 Jaeger 镜像地址+tag
+   alauda-csv.yaml ──patch──> CSV.relatedImages 注入 Jaeger 镜像地址 + tag
                                           ▼
                           单一 OLM bundle 镜像
                                           ▼
-                ╔══════════════════════════════════════╗
-                ║  插件：Alauda Build of OpenTelemetry v2 ║
-                ║  （含 operator + collector + jaeger ×3 ║
-                ║    + oauth2-proxy 的镜像清单）          ║
-                ╚══════════════════════════════════════╝
+                ╔═══════════════════════════════════════╗
+                ║  插件：Alauda Build of OpenTelemetry v2  ║
+                ║  = operator（部署 Jaeger 的控制器）       ║
+                ║   + relatedImages（jaeger ×3 / collector ║
+                ║     / oauth2-proxy 的镜像地址清单）       ║
+                ╚═══════════════════════════════════════╝
+                                          │ 部署时：从 CSV.relatedImages 取 JAEGER_IMAGE
+                                          ▼
+                operator 据 OpenTelemetryCollector CR(spec.image=JAEGER_IMAGE) 拉起 Jaeger
 ```
 
 ### 2.3 发版结果
 
 - **一个插件**：`Alauda Build of OpenTelemetry v2`。
-- **一条流水线**：Jaeger 的版本以"入参"形式注入，Jaeger 不单独发版。
-- 用户在 ACP 上**只需安装一个插件**即可同时获得 OTel 与 Jaeger 的镜像清单。
+- **一条流水线**：Jaeger 版本以"入参"形式注入，Jaeger 不单独发版。
+- 用户在 ACP 上**只装一个插件**，即同时获得"部署 Jaeger 的 operator"与"Jaeger 镜像地址"，二者同源同版本。
 
 ---
 
 ## 3. 方案二：独立封装为 Jaeger v2 ACP 集群插件
 
-参考 `servicemesh2-docs/charts/mesh-v2-test-suite` 的模式，将 Jaeger 镜像列表封装成一个 **ACP 集群插件（ModulePlugin）**。构建规范见在线文档 [plugin-build-guide.md](https://github.com/alauda/cluster-plugin/blob/main/docs/plugin-build-guide.md)。
+参考 `servicemesh2-docs/charts/mesh-v2-test-suite` 的模式，将 Jaeger 镜像列表封装成一个 **ACP 集群插件（ModulePlugin）**。构建规范见 [plugin-build-guide.md](https://github.com/alauda/cluster-plugin/blob/main/docs/plugin-build-guide.md)。
 
 ### 3.1 机制
 
-以 Helm chart + `ModulePlugin` CR 的形式交付（与 OLM 是 ACP 上**两套不同的插件子系统**）：
+以 Helm chart + `ModulePlugin` CR 的形式交付（与 OLM 在 ACP 上是**两套不同的插件子系统**）：
 
-- **`Chart.yaml`**：Helm chart 元信息（`type: application`）。
-- **`module-plugin.yaml`**：`cluster.alauda.io/v1alpha1` 的 `ModulePlugin` 声明，定义插件身份、展示名、分类、`appReleases[].chartVersions[].version` 等。
-- **`values.yaml` 的 `global.images`**：声明随插件下发的镜像清单（Jaeger 场景即 `jaeger` / `jaeger-es-rollover` / `jaeger-es-index-cleaner`）。`repository` 必须是**不含 registry 前缀**的相对路径，外加 `tag` / `support_arm` / `thirdparty`。
-- **`scripts/plugin-config.yaml`**：`valuesTemplates` 在安装时用 `<< .RegistryAddress >>` 把 `global.registry.address` 重写为**当前集群的内置镜像仓库地址**。
-- **`templates/_helpers.tpl` + 占位 ConfigMap**：用 helper 把镜像拼成完整可拉取地址，安装后通过 ConfigMap（`data.registry` / `data.images`）暴露给业务工作负载引用。
-- **打包上架**：`helm package`/`helm push` 推 chart 到 OCI 仓库，再用 `violet create`/`package`/`push` 把 chart 与镜像打成插件包并上架到 ACP。安装时镜像被同步进集群内置仓库。
+- **`Chart.yaml`** / **`module-plugin.yaml`**：chart 元信息与 `cluster.alauda.io/v1alpha1` 的 `ModulePlugin` 声明（插件身份、展示名、版本等）。
+- **`values.yaml` 的 `global.images`**：声明随插件下发的镜像清单（Jaeger 场景即 `jaeger` / `jaeger-es-rollover` / `jaeger-es-index-cleaner`，可选 `oauth2-proxy`）。`repository` 必须是**不含 registry 前缀**的相对路径。
+- **`scripts/plugin-config.yaml`**：`valuesTemplates` 在安装时用 `<< .RegistryAddress >>` 把 registry 重写为**当前集群的内置镜像仓库地址**。
+- **`templates/_helpers.tpl` + 占位 ConfigMap**：把镜像拼成完整可拉取地址，安装后通过 ConfigMap（`data.registry` / `data.images`）暴露给使用方引用。
+- **打包上架**：`helm package`/`helm push` 推 chart 到 OCI，再用 `violet create`/`package`/`push` 把 chart 与镜像打成插件包上架 ACP；安装时镜像被同步进集群内置仓库。
 - **版本管理**：chart 版本号需在 `Chart.yaml` 与 `module-plugin.yaml` 两处保持一致（`hack/update-version.sh` 一键同步）。
+
+> **重要**：该插件只负责**分发镜像**，**不提供部署能力**（没有 CRD / 控制器）。要真正部署 Jaeger 实例，**仍然必须安装 OTel 插件**、由其 operator 通过 `OpenTelemetryCollector` 完成。因此本方案下用户需**同时安装两个插件**，且部署文档需改为从本插件的 ConfigMap（而非 operator CSV）取镜像地址。
 
 ### 3.2 数据流
 
 ```
 jaeger 仓库 ──打 tag──> CI 构建 jaeger / es-rollover / es-index-cleaner 镜像
-                                          │
                                           ▼
-        Jaeger 插件 chart:  values.yaml.global.images 列出三个镜像
+        Jaeger 插件 chart:  values.yaml.global.images 列出镜像
             helm package/push + violet create/package/push
                                           ▼
-                ╔══════════════════════════╗      ╔══════════════════════════════════╗
-                ║ 插件：Alauda Build of      ║      ║ 插件：Alauda Build of               ║
-                ║       Jaeger v2           ║      ║       OpenTelemetry v2（不含 jaeger）║
-                ║ （jaeger ×3 镜像清单）      ║      ║ （operator + collector + oauth2）   ║
-                ╚══════════════════════════╝      ╚══════════════════════════════════╝
-                          │ 安装时同步到集群内置镜像仓库
-                          ▼
-                ConfigMap 暴露完整可拉取地址供业务引用
+    ╔══════════════════════════╗        ╔══════════════════════════════════════╗
+    ║ 插件：Alauda Build of      ║        ║ 插件：Alauda Build of OpenTelemetry v2 ║
+    ║       Jaeger v2           ║        ║ = operator（部署 Jaeger 的控制器）       ║
+    ║ = 仅 jaeger ×3 镜像清单     ║        ║   + collector / oauth2-proxy 镜像       ║
+    ╚══════════════════════════╝        ╚══════════════════════════════════════╝
+              │ 安装时同步镜像到内置仓库            │ 提供 OpenTelemetryCollector CRD + 控制器
+              │ ConfigMap 暴露镜像地址             │
+              └───────────────┬──────────────────┘
+                              ▼  二者缺一不可，才能部署 Jaeger
+            operator 据 OpenTelemetryCollector CR(spec.image=Jaeger 插件提供的镜像) 拉起 Jaeger
 ```
 
 ### 3.3 发版结果
 
-- **两个插件**：`Alauda Build of OpenTelemetry v2`（去掉 Jaeger）+ `Alauda Build of Jaeger v2`。
+- **两个插件**：`Alauda Build of OpenTelemetry v2`（去掉 Jaeger 镜像）+ `Alauda Build of Jaeger v2`（Jaeger 镜像）。
 - **两条发版流程**：各自独立的版本号与打包/上架流水线。
-- 用户需要分别安装两个插件，才能获得完整的"采集 + 存储/查询/UI"追踪能力。
+- 用户需**分别安装两个插件**才能部署 Jaeger；两个插件分属 OLM 与 ModulePlugin 两套子系统，依赖关系无法声明式表达。
 
 ---
 
@@ -108,19 +148,19 @@ jaeger 仓库 ──打 tag──> CI 构建 jaeger / es-rollover / es-index-cle
 | 维度 | 方案一：随 OTel Operator v2 插件 | 方案二：独立 Jaeger v2 集群插件 |
 | --- | --- | --- |
 | 分发载体 | OLM Operator Bundle / CSV `relatedImages` | ACP `ModulePlugin`（Helm chart + `global.images`） |
-| 插件数量 | **1 个** | **2 个** |
+| 插件数量 | **1 个** | **2 个（缺一不可才能部署 Jaeger）** |
+| 部署 Jaeger 的硬依赖 | 同一插件内即满足（operator + 镜像同源） | 仍需 OTel 插件；本插件只补充镜像 |
 | 发版流水线 | 1 条（otel-operator `alauda-release`） | 2 条（otel + jaeger 各一） |
-| Jaeger 版本载体 | Operator 流水线的入参 `jaeger_tag` | Jaeger 插件自身的 chart 版本号 |
-| 镜像进入集群的方式 | OLM `relatedImages`（mirror / bundle 镜像清单） | `global.images` 安装时同步到内置仓库，ConfigMap 暴露地址 |
-| 版本耦合度 | **强**：Jaeger 随 Operator 一起发 | **弱**：各自独立发版 |
-| 独立复用 | 否，必须随 Operator 安装 | 是，可被任意产品/集群单独安装 |
-| 兼容性管理 | 一次发版即锁定组合，无组合矩阵 | 需管理/测试 Operator × Jaeger 版本组合矩阵 |
-| 依赖约束 | 同包交付，天然共同可用 | 无声明式依赖，靠文档/人工保证组合正确 |
-| 新增维护对象 | 仅 `alauda-csv.yaml` + patch 脚本 | 新增并长期维护 chart + ModulePlugin + violet 流程 |
-| 用户安装步骤 | 装 1 个插件 | 装 2 个插件（需说明顺序/依赖） |
-| Owner / 主导仓库 | `opentelemetry-operator` 仓库 | `jaeger` 仓库可自主掌控 |
-| 与现有资产的契合 | 即现状，零额外成本 | 复用 `mesh-v2-test-suite` 的成熟模式 |
-| CVE / 热修响应 | 必须走整条 Operator 发版 | 可单独快速补丁发布 |
+| Jaeger 版本载体 | Operator 流水线入参 `jaeger_tag` | Jaeger 插件自身 chart 版本号 |
+| 部署取镜像来源 | operator CSV `relatedImages`（与控制器同源） | Jaeger 插件安装后暴露的 ConfigMap |
+| operator ↔ Jaeger 版本一致性 | **天然同源同版本、同发版同测试** | 各自演进，需人工/文档保证组合可用 |
+| 镜像进入集群的方式 | OLM `relatedImages`（mirror + 部署取址） | `global.images` 安装时同步到内置仓库 |
+| 跨插件依赖约束 | 无需（本就一体） | **无法声明式表达**，靠文档约束 |
+| 独立发版 / 热修 | 否，须随 operator 重新发版 | **是**，Jaeger 镜像可独立打补丁 |
+| 新增维护对象 | 仅 `alauda-csv.yaml` + patch 脚本 | 新增 chart + ModulePlugin + violet 流程 |
+| 用户安装步骤 | 装 1 个插件 | 装 2 个插件（需说明依赖/顺序） |
+| Owner / 主导仓库 | `opentelemetry-operator` 仓库 | `jaeger` 仓库可自主 |
+| 与现有资产的契合 | 即现状，零额外成本 | 复用 `mesh-v2-test-suite` 模式 |
 
 ---
 
@@ -128,19 +168,20 @@ jaeger 仓库 ──打 tag──> CI 构建 jaeger / es-rollover / es-index-cle
 
 ### 优点
 
-1. **发版与安装最简**：只发一个插件、跑一条流水线，用户只装一个插件。Jaeger 版本作为流水线入参注入，无需为 Jaeger 单独发版。
-2. **版本一致性强、无组合矩阵**：Operator、Collector、Jaeger、OAuth2-Proxy 的版本组合在**同一次发版**中确定并整体验证，从源头杜绝版本漂移与"装到不兼容组合"的问题。
-3. **复用 OLM 原生机制、离线场景成熟**：`relatedImages` 是 OperatorHub/OLM 标准的伴随镜像声明，离线镜像同步（mirror）工具链天然识别，air-gap 场景路径成熟，无需自行设计镜像同步逻辑。
-4. **维护面最小**：不需要新建并长期维护独立的 chart 仓库、`module-plugin.yaml`、`plugin-config.yaml` 和 violet 打包/上架流程。改动集中在一个 `alauda-csv.yaml` 加一个 patch 脚本。
-5. **单一事实来源**：所有可观测组件镜像集中在一个 CSV 的 `relatedImages` 中，便于审计与离线清单导出。
+1. **与部署架构天然契合（最关键）**：Jaeger 实例由 operator 通过 `OpenTelemetryCollector` 部署，而 operator 与 Jaeger 镜像引用同处一个 CSV，部署时直接从 `relatedImages` 取镜像地址。**"部署 Jaeger 的控制器"与"被部署的 Jaeger 镜像"同源、同版本、同一次发版同一次测试**，从结构上杜绝二者版本错配。
+2. **依赖关系天然满足**：既然 Jaeger 部署本就强依赖 operator，把镜像与 operator 装在同一个插件里，意味着"装了 OTel 插件 = 具备部署 Jaeger 的全部要件"，不存在"有镜像但无 operator"或"有 operator 但镜像缺失/版本不符"的中间态。
+3. **发版与安装最简**：只发一个插件、跑一条流水线，用户只装一个插件；Jaeger 版本作为入参注入，无需单独发版。
+4. **版本组合强一致、无矩阵**：operator / collector / jaeger / oauth2-proxy 的版本组合在**同一次发版**中确定并整体验证，杜绝版本漂移。
+5. **复用 OLM 原生机制**：`relatedImages` 既是离线镜像同步（mirror）清单、也是部署取镜像的来源，air-gap 链路成熟，无需自研镜像同步。
+6. **维护面最小**：无需新建并长期维护独立 chart 仓库、`module-plugin.yaml`、`plugin-config.yaml` 与 violet 流程。
 
 ### 缺点
 
-1. **强耦合，发版被绑死**：Jaeger 的任何发布（哪怕只是修一个 CVE）都必须搭载 OTel Operator 走完整条发版流水线、产出新的 Operator bundle 版本；反之 Operator 发版也被动带上 Jaeger。两者无法独立演进。
-2. **版本语义混淆**：插件版本号是 Operator 的版本，Jaeger 的升级只体现在 `relatedImages` 的 tag 上，不反映在插件大版本里，用户难以单独感知"Jaeger 升级了"。
-3. **无法被其他产品独立复用**：若 ASM、独立 Tracing 方案等只需要 Jaeger 镜像而不需要 OTel Operator，没有单独安装 Jaeger 的途径，只能整包安装 Operator 插件。
-4. **跨仓库职责边界模糊**：Jaeger 由 `jaeger` 仓库构建，但其"发布动作"和版本节奏由 `opentelemetry-operator` 仓库的流水线控制，每次发版需要把 Jaeger tag **手动填入** Operator 流水线，存在跨团队协调成本与填错风险。
-5. **镜像落地语义不够显式**：`relatedImages` 主要面向 mirror / bundle 清单；这些镜像是否、以及以何种地址被同步到集群内置仓库并供业务引用，取决于平台对 OLM `relatedImages` 的集成实现，不如方案二 `global.images` + registry 重写 + ConfigMap 暴露地址那样显式、可控。
+1. **强耦合，发版被绑死**：Jaeger 镜像的任何发布（哪怕只是修一个 CVE）都必须**重跑 OTel Operator 整条发版流水线**、产出新的 bundle 版本；无法独立打补丁。
+2. **版本语义混淆**：插件版本号是 operator 的版本，Jaeger 的升级只体现在 `relatedImages` 的 tag 上，不反映在插件大版本里，用户难以单独感知"Jaeger 升级了"。
+3. **跨仓库手动协调**：Jaeger 由 `jaeger` 仓库构建，但其"发布动作"由 `opentelemetry-operator` 仓库的流水线控制，每次发版需把 Jaeger tag **手动填入** operator 流水线，存在协调成本与填错风险。
+
+> 注：方案一**不存在**"无法被独立复用"这一缺点——因为 Jaeger 部署本就必须依赖 operator，不存在脱离 operator 单独使用 Jaeger 镜像的合理场景（见 §1.2）。这恰恰是方案一与架构契合之处。
 
 ---
 
@@ -148,49 +189,52 @@ jaeger 仓库 ──打 tag──> CI 构建 jaeger / es-rollover / es-index-cle
 
 ### 优点
 
-1. **解耦、可独立演进**：Jaeger 拥有独立的发版流程与版本号，能不受 Operator 节奏约束地单独发布；CVE / 热修可快速单独出包。
-2. **版本与职责清晰**：`Alauda Build of Jaeger v2` 有自己的版本语义和明确 Owner（`jaeger` 仓库/团队），升级可被用户直观感知。
-3. **可被独立复用**：任何需要 Jaeger 镜像的产品或集群都能单独安装该插件，不绑定 OTel Operator，扩大了 Jaeger 发行版的适用面。
-4. **镜像分发语义显式、可控**：`ModulePlugin` 的 `global.images` + `valuesTemplates` registry 重写是 ACP 原生、成熟的"镜像随插件下发到内置仓库"机制；安装后通过 ConfigMap 暴露**完整可拉取地址**，业务引用路径明确。
-5. **按需选择、减少冗余**：只需要 Jaeger 的场景不必安装 OTel Operator，避免下发用不到的组件镜像。
-6. **复用既有模式与经验**：`servicemesh2-docs/charts/mesh-v2-test-suite` 已验证了"chart 模板 + ModulePlugin + violet 打包上架"的完整链路，团队有可直接套用的模板与流程经验。
+1. **独立发版节奏 / 快速热修（最主要、且依然成立的优势）**：Jaeger 镜像可独立打补丁、独立出包，**不必为一个 Jaeger 的 CVE 重新发布整个 operator**。这是方案二相较方案一唯一实质性的核心收益。
+2. **清晰的版本语义与 Owner**：`Alauda Build of Jaeger v2` 有自己的插件版本号与 `jaeger` 仓库 Owner，升级对用户可感知、职责边界清晰。
+3. **显式的镜像分发语义**：`global.images` + registry 重写 + ConfigMap 暴露地址，是 ACP 原生、成熟的"镜像随插件下发到内置仓库"机制；安装后 Jaeger 镜像同步到内置仓库、引用路径明确。
+4. **可顺带下发开箱即用资产**：如同 `mesh-v2-test-suite`，可在插件里附带 Jaeger 部署用的示例 `OpenTelemetryCollector` / `Instrumentation` / 监控面板等 manifest，提升落地体验（但**部署本身仍依赖 operator**）。
+5. **复用既有模式与经验**：团队已有 `mesh-v2-test-suite` 验证过的 chart 模板 + ModulePlugin + violet 打包上架链路，可直接套用。
 
 ### 缺点
 
-1. **发版与运维成本翻倍**：要发两个插件、维护两套版本号（且 chart 版本需在 `Chart.yaml` 与 `module-plugin.yaml` 两处保持同步）、跑两条打包/上架流程。
-2. **引入版本组合矩阵**：Operator 与 Jaeger 各自演进后，需要管理与测试两者的兼容性组合；用户存在装到不兼容组合的风险。
-3. **缺少声明式依赖、安装步骤更多**：OLM 与 ModulePlugin 分属两套子系统，"装了 Jaeger 不代表装了 Operator"无法用 OLM dependency 那样声明式约束，只能靠文档/人工保证；用户需安装两个插件并理解其先后依赖（如 Jaeger 需先于上报追踪的示例服务就绪）。
-4. **新增长期维护对象**：需要在 `jaeger`（或文档/charts）仓库新建并长期维护一套 chart + `ModulePlugin` + `plugin-config.yaml` + violet 流水线，有初期投入与持续维护成本。
-5. **需遵守 ModulePlugin 的打包约束**：所有镜像必须与主 chart 同一 registry domain；`global.images.<name>.repository` 不能含 registry 前缀，否则会被拼成错误的双域名地址（与 `mesh-v2-test-suite` 的约束一致）。
-6. **离线/mirror 走 ACP 自有通道**：air-gap 场景不再依赖 OLM 标准 mirror 工具，而是走 ACP ModulePlugin 的同步机制。在 ACP 语境下这反而是原生路径，但与 OLM 工具链并存会带来一定认知/工具差异。
+1. **"独立复用"并不成立——拆分不解耦反增协调**：很多人期望"独立插件 = Jaeger 可独立使用"，但 §1.2 已说明，**Jaeger 部署永远离不开 OTel 插件的 operator**。拆分后并没有让 Jaeger 变得可独立部署，反而要求用户**同时安装两个插件**，且 OLM 与 ModulePlugin 两套子系统之间**无法声明式表达"Jaeger 插件依赖 OTel 插件"**，只能靠文档约束，更易漏装/装错。
+2. **operator ↔ Jaeger 版本一致性风险（关键）**：Jaeger v2 是基于 OpenTelemetry Collector 框架构建的二进制，而部署它的 operator 也对所管理的 `OpenTelemetryCollector`（CRD schema、config 格式、feature gate）有版本预期。两者拆开独立演进后，需要额外维护并测试"operator 版本 × Jaeger 镜像版本"的**兼容矩阵**；方案一里它们同源同版本，方案二把这份一致性责任甩给了人和文档。
+3. **发版/运维成本翻倍**：要发两个插件、维护两套版本号（chart 版本还需在两个文件间同步）、跑两条打包/上架流程。
+4. **用户安装步骤增多**：要装两个插件、并理解其依赖与先后关系，体验更繁琐。
+5. **新增长期维护对象**：需在 `jaeger`（或文档/charts）仓库新建并长期维护 chart + `ModulePlugin` + `plugin-config.yaml` + violet 流水线。
+6. **需遵守 ModulePlugin 打包约束**：所有镜像须与主 chart 同一 registry domain；`repository` 不能含 registry 前缀，否则拼出错误的双域名地址（与 `mesh-v2-test-suite` 约束一致）。
+7. **需改造现有部署文档**：现状文档从 operator CSV 的 `relatedImages` 取 `JAEGER_IMAGE`，方案二下要改为从 Jaeger 插件的 ConfigMap 取镜像地址。
 
 ---
 
 ## 7. 适用场景与建议
 
-两种方案没有绝对优劣，取舍取决于 **Jaeger 是否需要脱离 OTel Operator 独立存在**：
+补充了"Jaeger 部署强依赖 OTel 插件"这一架构事实后，天平明显偏向**方案一**：
 
-- **倾向方案一（维持现状）**，当：
-  - Jaeger 在产品形态上**总是与 OTel Operator v2 捆绑交付**，没有"单独要 Jaeger"的诉求；
-  - 团队更看重**发版/安装的简单性**与**版本组合的强一致性**；
-  - 希望把离线镜像同步继续交给成熟的 OLM mirror 工具链；
-  - 不希望新增一套 chart/插件的长期维护负担。
+- **推荐维持方案一**，因为：
+  - Jaeger 实例只能由 OTel 插件的 operator 通过 `OpenTelemetryCollector` 部署，**不存在脱离 OTel 插件的独立 Jaeger 使用场景**——拆分插件并不能带来"独立可用"，反而增加双插件协调；
+  - Jaeger 镜像与部署它的 operator 同源于一个 CSV，**版本一致性由结构保证**；而 Jaeger v2 基于 Collector 框架，与 operator 的版本耦合恰恰需要这种"同发版同测试"；
+  - 发版/安装最简，离线 mirror 走成熟的 OLM 链路，维护面最小。
 
-- **倾向方案二（拆分独立插件）**，当：
-  - Jaeger 需要**独立的发布节奏**（如安全补丁要快速单发，不愿被 Operator 发版拖慢）；
-  - Jaeger 镜像需要**被 OTel Operator 之外的产品复用**（ASM、独立 Tracing 等）；
-  - 希望 Jaeger 有**清晰、用户可感知的独立版本语义与 Owner**；
-  - 团队愿意承担两个插件的版本组合管理与维护成本，并已准备好复用 `mesh-v2-test-suite` 模式。
+- **仅当出现下列明确驱动时，才考虑方案二**：
+  - Jaeger 镜像需要**显著快于 operator 的独立发版/热修节奏**（如安全补丁要求脱离 operator 发版周期快速单发），且团队愿意承担由此带来的 operator×Jaeger 兼容矩阵管理成本；
+  - 或希望借独立插件**顺带下发一套开箱即用的 Jaeger 部署/示例/面板资产**，把落地体验产品化。
 
-### 可选的折中思路
+  即便如此，仍需在插件依赖（双插件、跨子系统无声明式依赖）与版本一致性上付出额外治理成本。
 
-若既想要方案二的"独立 Jaeger 插件"、又不愿放弃方案一的离线完整性，可考虑**以 Jaeger v2 插件作为 Jaeger 镜像的事实来源与分发载体**，同时在 OTel Operator 的 `relatedImages` 中保留 Jaeger 条目仅用于离线 mirror 清单完整性。但这会造成**镜像清单两处维护**的冗余，且 OLM 与 ModulePlugin 跨子系统难以建立声明式依赖，收益有限——除非离线 mirror 的完整性是硬约束，否则不建议同时维护两套。
+### 关于"折中"的提醒
 
-> 综合来看：**若短期内 Jaeger 不存在独立复用与独立发版的明确需求，维持方案一成本最低；一旦出现"Jaeger 要被独立消费"或"发版节奏需解耦"的驱动，再切换到方案二并复用 `mesh-v2-test-suite` 模式是更顺的演进路径。**
+由于部署 Jaeger 必须依赖 operator、且二者存在版本耦合，**"既保留 operator relatedImages、又另发一个 Jaeger 插件"的折中会造成镜像清单两处维护、且无法声明式约束依赖**，收益有限、反增混乱，一般不建议。若确需独立发版，更应整体评估是否把 Jaeger 的部署编排能力也一并产品化，而非只搬运镜像。
+
+> **结论**：在"Jaeger 部署强依赖 OTel 插件、且二者版本耦合"的现实约束下，**方案一（现状）是与架构最契合、成本最低的选择**；方案二唯一实质收益是 Jaeger 镜像的独立发版/热修，但这一收益会被 operator↔Jaeger 版本一致性风险与双插件协调成本部分抵消。除非"独立热修节奏"成为硬需求，否则建议维持方案一。
 
 ---
 
 ## 附录：关键文件索引
+
+**架构依据**
+
+- `distributed-tracing-docs/docs/en/installing/installing-distributed-tracing.mdx` —— Jaeger v2 以 `OpenTelemetryCollector`（`spec.image=JAEGER_IMAGE`）部署、镜像取自 operator CSV `relatedImages` 的完整流程
 
 **方案一（现状）**
 
