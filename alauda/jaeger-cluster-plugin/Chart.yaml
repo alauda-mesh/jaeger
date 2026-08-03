@@ -1,0 +1,14 @@
+apiVersion: v2
+name: jaeger-cluster-plugin
+description: Alauda Build of Jaeger v2 cluster plugin that ships the Jaeger and OAuth2 Proxy container images required by Alauda Distributed Tracing
+type: application
+# version / appVersion 由 hack/update-version.sh 或 CI 流水线统一更新，
+# version 为 chart 版本（带 v 前缀），appVersion 为 Jaeger 发行版版本（镜像 tag）
+version: v2.16.0-r2
+appVersion: "2.16.0-r2"
+annotations:
+  # OCI provenance 元数据，CI 流水线构建时会将占位符替换为实际值；
+  # helm push 会把这些注解同步为 OCI artifact annotations
+  org.opencontainers.image.source: https://github.com/alauda-mesh/jaeger
+  org.opencontainers.image.revision: GIT-REVISION-PLACEHOLDER
+  org.opencontainers.image.ref.name: GIT-REF-NAME-PLACEHOLDER

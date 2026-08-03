@@ -7,6 +7,7 @@ on:
       - "cmd/es-rollover/**"
       - "cmd/es-index-cleaner/**"
       - "internal/**"
+      - "alauda/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/alauda-build-jaeger.yaml"
@@ -223,6 +224,11 @@ jobs:
             base_image=build-harbor.alauda.cn/mlops/static@sha256:d2185a95c5e553a32e4f82d8138ccb78b57242f987985bd089ae2fb3c21e18d0
             TARGETARCH=${{ matrix.arch }}
           target: release
+          # OCI provenance 元数据，标记镜像的源仓库、commit 与分支/标签
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.ref.name=${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
           tags: |
             ${{ env.IMG_PREFIX }}/${{ steps.image-info.outputs.image_name }}:${{ steps.image-info.outputs.tag }}
         env:
@@ -277,3 +283,52 @@ jobs:
             -m "${IMG_PREFIX}/${IMAGE_NAME}:${TAG}-amd64" \
             -m "${IMG_PREFIX}/${IMAGE_NAME}:${TAG}-arm64" \
             -t "${IMG_PREFIX}/${IMAGE_NAME}:${TAG}"
+
+  build-cluster-plugin:
+    name: Build and push cluster plugin chart
+    runs-on: [self-hosted, linux]
+    needs: [determine-version, merge-manifests]
+
+    env:
+      http_proxy: ${{ vars.http_proxy }}
+      https_proxy: ${{ vars.https_proxy }}
+      no_proxy: ${{ vars.no_proxy }}
+      CHART_DIR: alauda/jaeger-cluster-plugin
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Update chart version and jaeger image tags
+        env:
+          TAG: ${{ needs.determine-version.outputs.tag }}
+        run: |
+          # 将 chart 版本与 3 个 jaeger 镜像 tag 统一为本次构建的版本（与同一流水线构建出的镜像一致）
+          "${CHART_DIR}/hack/update-version.sh" "${TAG}"
+
+      - name: Add OCI provenance metadata
+        env:
+          REF_NAME: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+        run: |
+          # 替换 Chart.yaml 中 org.opencontainers.image.* provenance 注解的占位符；
+          # helm push 时这些注解会同步为 OCI artifact annotations
+          sed -i "s|GIT-REVISION-PLACEHOLDER|${{ github.sha }}|" "${CHART_DIR}/Chart.yaml"
+          sed -i "s|GIT-REF-NAME-PLACEHOLDER|${REF_NAME}|" "${CHART_DIR}/Chart.yaml"
+          grep "org.opencontainers.image" "${CHART_DIR}/Chart.yaml"
+
+      - name: Lint chart
+        run: helm lint "${CHART_DIR}"
+
+      - name: Package and push chart
+        env:
+          TAG: ${{ needs.determine-version.outputs.tag }}
+        run: |
+          echo "${{ secrets.HARBOR_PASSWORD }}" | helm registry login build-harbor.alauda.cn \
+            --username "${{ secrets.HARBOR_USERNAME }}" --password-stdin
+          helm package "${CHART_DIR}"
+          # chart 版本带 v 前缀，产物为 jaeger-cluster-plugin-v<TAG>.tgz，
+          # 推送后地址：build-harbor.alauda.cn/asm/jaeger-cluster-plugin:v<TAG>
+          helm push "jaeger-cluster-plugin-v${TAG}.tgz" oci://build-harbor.alauda.cn/asm
