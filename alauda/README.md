@@ -32,41 +32,54 @@
 
 **注：该镜像暂时不需要自行构建。**
 
-同步上游开源镜像（新版本或修复了安全漏洞的版本）：
+同步上游开源镜像（新版本或修复了安全漏洞的版本）。
 
-1. 从 quay.io 同步镜像（仅保留 linux/amd64、linux/arm64 两个架构）：
+> **注意**：build-harbor.alauda.cn 的 tag 配置为不可变（immutable），同一 tag 只允许推送一次，之后无法覆盖推送——因此**不能**先把镜像推到最终 tag、再用 `crane mutate` 原地补 label（第二次推送会被 `PRECONDITION ... configured as immutable` 拒绝）。需按下述顺序操作：先同步到临时 tag，补全 label 后再写入最终 tag，让最终 tag 的唯一一次推送就携带完整的 provenance 元数据。
+
+1. 从 quay.io 同步镜像到**临时 tag**（仅保留 linux/amd64、linux/arm64 两个架构）：
 
    ```bash
    crane index filter \
      quay.io/oauth2-proxy/oauth2-proxy:<version-tag> \
-     -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n> \
+     -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp \
      --platform linux/amd64 \
      --platform linux/arm64
    # 示例：
    crane index filter \
-     quay.io/oauth2-proxy/oauth2-proxy:v7.15.1 \
-     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.1-r0 \
+     quay.io/oauth2-proxy/oauth2-proxy:v7.15.2 \
+     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp \
      --platform linux/amd64 \
      --platform linux/arm64
    ```
 
-2. 补充 OCI provenance 元数据。上游镜像已带 `org.opencontainers.image.source` 标签，还需补充 `org.opencontainers.image.revision`（上游 tag 对应的 commit SHA）与 `org.opencontainers.image.ref.name`（上游 tag）：
+2. 以临时 tag 为源补充 OCI provenance 元数据，并写入**最终 tag**。上游镜像已带 `org.opencontainers.image.source` 标签，还需补充 `org.opencontainers.image.revision`（上游 tag 对应的 commit SHA）与 `org.opencontainers.image.ref.name`（上游 tag）：
 
    ```bash
    # 查询上游 tag 对应的 commit SHA（annotated tag 取带 ^{} 的那行）
    git ls-remote --tags https://github.com/oauth2-proxy/oauth2-proxy.git '<version-tag>*'
 
-   # 为同步后的多架构镜像补充 provenance 标签（需要 crane >= v0.13，会对 index 内各架构镜像生效）
-   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n> \
+   # 补充 provenance 标签并写入最终 tag（需要 crane >= v0.13，会对 index 内各架构镜像生效；
+   # 最终 tag 仅在此处推送一次，不会触发 immutable 限制）
+   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp \
      --label "org.opencontainers.image.revision=<upstream-commit-sha>" \
      --label "org.opencontainers.image.ref.name=<version-tag>" \
      -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n>
    # 示例：
-   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.1-r0 \
-     --label "org.opencontainers.image.revision=$(git ls-remote https://github.com/oauth2-proxy/oauth2-proxy.git 'refs/tags/v7.15.1^{}' | cut -f1)" \
-     --label "org.opencontainers.image.ref.name=v7.15.1" \
-     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.1-r0
+   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp \
+     --label "org.opencontainers.image.revision=$(git ls-remote https://github.com/oauth2-proxy/oauth2-proxy.git 'refs/tags/v7.15.2^{}' | cut -f1)" \
+     --label "org.opencontainers.image.ref.name=v7.15.2" \
+     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-r0
    ```
+
+3. 删除临时 tag。`crane mutate` 产生了新的 manifest，最终 tag 与临时 tag 指向不同 digest，删除临时 tag 不影响最终 tag：
+
+   ```bash
+   crane delete build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp
+   # 示例：
+   crane delete build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp
+   ```
+
+   > 若临时 tag 也命中了 Harbor 的 tag 不可变规则导致删除被拒，在 Harbor 界面手动清理即可，不影响最终产物。
 
 同步完成后，更新 [jaeger-cluster-plugin/values.yaml](./jaeger-cluster-plugin/values.yaml) 中 `oauth2-proxy.tag` 为新版本（保留行尾的 `# oauth2-proxy-tag` 标记，CI 流水线依赖它读取并输出该版本）。
 
