@@ -108,7 +108,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "~1.26.1"
+          go-version: 1.26
           cache: false
 
       # jaeger-query 包含 UI，提前统一安装，对 es-rollover 构建无影响
@@ -224,13 +224,12 @@ jobs:
             base_image=build-harbor.alauda.cn/mlops/static@sha256:d2185a95c5e553a32e4f82d8138ccb78b57242f987985bd089ae2fb3c21e18d0
             TARGETARCH=${{ matrix.arch }}
           target: release
-          # OCI provenance 元数据，标记镜像的源仓库、commit 与分支/标签
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.ref.name=${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
           tags: |
             ${{ env.IMG_PREFIX }}/${{ steps.image-info.outputs.image_name }}:${{ steps.image-info.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.ref.name=${{ github.ref }}
         env:
           DOCKER_BUILD_SUMMARY: false
 
@@ -283,6 +282,30 @@ jobs:
             -m "${IMG_PREFIX}/${IMAGE_NAME}:${TAG}-amd64" \
             -m "${IMG_PREFIX}/${IMAGE_NAME}:${TAG}-arm64" \
             -t "${IMG_PREFIX}/${IMAGE_NAME}:${TAG}"
+
+  output-images:
+    name: Output images
+    runs-on: ubuntu-latest
+    needs: [determine-version, merge-manifests]
+
+    outputs:
+      images: ${{ steps.output-images.outputs.images }}
+
+    steps:
+      - name: >-
+          ${{ format('Output images: {0}/jaeger:{1},{0}/jaeger-es-rollover:{1},{0}/jaeger-es-index-cleaner:{1}', env.IMG_PREFIX, needs.determine-version.outputs.tag) }}
+        id: output-images
+        env:
+          IMAGES: >-
+            ${{ format('["{0}/jaeger:{1}","{0}/jaeger-es-rollover:{1}","{0}/jaeger-es-index-cleaner:{1}"]', env.IMG_PREFIX, needs.determine-version.outputs.tag) }}
+        run: |
+          echo "BUILD_IMAGES=${IMAGES}"
+          echo "images=${IMAGES}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Build images"
+            echo
+            echo "$IMAGES" | jq -r '.[] | "- `\(.)`"'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build-cluster-plugin:
     name: Build and push cluster plugin chart
