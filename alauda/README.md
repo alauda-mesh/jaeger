@@ -71,15 +71,17 @@
      -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-r0
    ```
 
-3. 删除临时 tag。`crane mutate` 产生了新的 manifest，最终 tag 与临时 tag 指向不同 digest，删除临时 tag 不影响最终 tag：
+   > 若此步仍报 `configured as immutable`，说明最终 tag 已被占用（例如此前曾把未打 label 的镜像直接同步到了该 tag）。被占用的 tag 无法覆盖也无法修复，换用下一个 `-r<n>` 序号（如 `-r1`）作为最终 tag 重新执行本步即可。可用 `crane config <最终tag> | jq '.config.Labels'` 检查已存在 tag 是否携带完整 label。
+
+3. 删除临时 tag。Harbor 不支持按 tag 删除 manifest（直接传 tag 会报 `UNSUPPORTED: unsupported digest ...: invalid checksum digest format`），需先解析出 digest 再删除：
 
    ```bash
-   crane delete build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp
+   crane delete "build-harbor.alauda.cn/asm/oauth2-proxy@$(crane digest build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp)"
    # 示例：
-   crane delete build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp
+   crane delete "build-harbor.alauda.cn/asm/oauth2-proxy@$(crane digest build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp)"
    ```
 
-   > 若临时 tag 也命中了 Harbor 的 tag 不可变规则导致删除被拒，在 Harbor 界面手动清理即可，不影响最终产物。
+   > 按 digest 删除会移除该 artifact 及其**全部** tag。正常流程中临时 tag 的 digest 独立于最终 tag（`crane mutate` 产生了新 manifest），删除是安全的；但若同一镜像内容曾被直接推送到其他 tag（与临时 tag 同 digest），删除会连带那些 tag——命中该情况或删除被 tag 不可变规则拒绝时，改在 Harbor 界面单独删除临时 tag 即可，清理失败也不影响最终产物。
 
 同步完成后，更新 [jaeger-cluster-plugin/values.yaml](./jaeger-cluster-plugin/values.yaml) 中 `oauth2-proxy.tag` 为新版本（保留行尾的 `# oauth2-proxy-tag` 标记，CI 流水线依赖它读取并输出该版本）。
 
