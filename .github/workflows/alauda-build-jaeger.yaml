@@ -7,7 +7,7 @@ on:
       - "cmd/es-rollover/**"
       - "cmd/es-index-cleaner/**"
       - "internal/**"
-      - "alauda/**"
+      - "alauda/jaeger-cluster-plugin/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/alauda-build-jaeger.yaml"

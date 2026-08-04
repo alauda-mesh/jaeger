@@ -9,7 +9,7 @@ metadata:
     cpaas.io/module-catalog: servicemesh
     cpaas.io/module-name: jaeger-cluster-plugin
     cpaas.io/module-type: plugin
-    cpaas.io/product: devops
+    cpaas.io/product: distributed-tracing
   name: jaeger-cluster-plugin
 spec:
   appReleases:
@@ -20,8 +20,8 @@ spec:
     name: jaeger-cluster-plugin
   deleteable: true
   description:
-    en: Ships the container images required by Alauda Distributed Tracing, including Jaeger (jaeger / jaeger-es-rollover / jaeger-es-index-cleaner) and OAuth2 Proxy. Installing the plugin synchronizes these images to the platform's built-in registry and creates the ConfigMap jaeger-cluster-plugin-manifest (image addresses and version) in the cpaas-system namespace, from which the Alauda Distributed Tracing installation reads the image addresses.
-    zh: 随插件下发 Alauda Distributed Tracing 所需的容器镜像，包括 Jaeger（jaeger / jaeger-es-rollover / jaeger-es-index-cleaner）与 OAuth2 Proxy。安装后镜像会同步到平台内置镜像仓库，并在 cpaas-system 命名空间创建 ConfigMap jaeger-cluster-plugin-manifest（含镜像地址与版本），供安装 Alauda Distributed Tracing（调用链）时读取镜像地址。
+    en: Alauda Distributed Tracing records how a single request travels across services in a distributed application. It helps teams follow request paths end to end, understand latency across service boundaries, and troubleshoot failures in cloud-native microservice environments.
+    zh: Alauda Distributed Tracing（分布式追踪）记录单个请求在分布式应用中跨服务的完整流转路径，帮助团队端到端地跟踪请求路径、了解跨服务边界的延迟，并排查云原生微服务环境中的故障。
   logo: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZD0iTTMyIDRMNTYgMThWNDZMMzIgNjBMOCA0NlYxOFoiIGZpbGw9IiMxOTc2RDIiLz48cGF0aCBkPSJNMTYgMjJINDZNMjIgMzJINDJNMjggNDJINDgiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI0IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48Y2lyY2xlIGN4PSIxNiIgY3k9IjIyIiByPSIzIiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iMjIiIGN5PSIzMiIgcj0iMyIgZmlsbD0iI2ZmZiIvPjxjaXJjbGUgY3g9IjI4IiBjeT0iNDIiIHI9IjMiIGZpbGw9IiNmZmYiLz48L3N2Zz4=
   mainChart: asm/jaeger-cluster-plugin
   name: jaeger-cluster-plugin

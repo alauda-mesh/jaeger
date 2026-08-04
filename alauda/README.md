@@ -26,19 +26,39 @@
 
 同步上游开源镜像（新版本或修复了安全漏洞的版本）：
 
-```bash
-crane index filter \
-  quay.io/oauth2-proxy/oauth2-proxy:<version-tag> \
-  -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n> \
-  --platform linux/amd64 \
-  --platform linux/arm64
-# 示例：
-crane index filter \
-  quay.io/oauth2-proxy/oauth2-proxy:v7.15.1 \
-  -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.1-r0 \
-  --platform linux/amd64 \
-  --platform linux/arm64
-```
+1. 从 quay.io 同步镜像（仅保留 linux/amd64、linux/arm64 两个架构）：
+
+   ```bash
+   crane index filter \
+     quay.io/oauth2-proxy/oauth2-proxy:<version-tag> \
+     -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n> \
+     --platform linux/amd64 \
+     --platform linux/arm64
+   # 示例：
+   crane index filter \
+     quay.io/oauth2-proxy/oauth2-proxy:v7.15.1 \
+     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.1-r0 \
+     --platform linux/amd64 \
+     --platform linux/arm64
+   ```
+
+2. 补充 OCI provenance 元数据。上游镜像已带 `org.opencontainers.image.source` 标签，还需补充 `org.opencontainers.image.revision`（上游 tag 对应的 commit SHA）与 `org.opencontainers.image.ref.name`（上游 tag）：
+
+   ```bash
+   # 查询上游 tag 对应的 commit SHA（annotated tag 取带 ^{} 的那行）
+   git ls-remote --tags https://github.com/oauth2-proxy/oauth2-proxy.git '<version-tag>*'
+
+   # 为同步后的多架构镜像补充 provenance 标签（需要 crane >= v0.13，会对 index 内各架构镜像生效）
+   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n> \
+     --label "org.opencontainers.image.revision=<upstream-commit-sha>" \
+     --label "org.opencontainers.image.ref.name=<version-tag>" \
+     -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n>
+   # 示例：
+   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.1-r0 \
+     --label "org.opencontainers.image.revision=$(git ls-remote https://github.com/oauth2-proxy/oauth2-proxy.git 'refs/tags/v7.15.1^{}' | cut -f1)" \
+     --label "org.opencontainers.image.ref.name=v7.15.1" \
+     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.1-r0
+   ```
 
 同步完成后，更新 [jaeger-cluster-plugin/values.yaml](./jaeger-cluster-plugin/values.yaml) 中 `oauth2-proxy.tag` 为新版本。
 
