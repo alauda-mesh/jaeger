@@ -1,0 +1,33 @@
+global:
+  namespace: cpaas-system
+  registry:
+    # 镜像源 registry 地址；ACP 安装插件时由 scripts/plugin-config.yaml 的
+    # valuesTemplates 通过 << .RegistryAddress >> 重写为平台内置镜像仓库地址
+    address: build-harbor.alauda.cn
+    imagePullSecrets: []
+  images:
+    # Jaeger 镜像（共 3 个），tag 结构为 <上游 Jaeger 版本>-<插件版本去 v 前缀>，
+    # 与集群插件 chart 版本一一对应，由 CI 或 hack/update-version.sh 统一更新；
+    # tag 行尾的 "# jaeger-tag" 为脚本的定位标记，请勿删除
+    jaeger:
+      repository: asm/jaeger
+      tag: "2.16.0-2.1.0-r0" # jaeger-tag
+      support_arm: true
+      thirdparty: false
+    jaeger-es-rollover:
+      repository: asm/jaeger-es-rollover
+      tag: "2.16.0-2.1.0-r0" # jaeger-tag
+      support_arm: true
+      thirdparty: false
+    jaeger-es-index-cleaner:
+      repository: asm/jaeger-es-index-cleaner
+      tag: "2.16.0-2.1.0-r0" # jaeger-tag
+      support_arm: true
+      thirdparty: false
+    # OAuth2 Proxy 镜像，从上游同步、版本独立维护，同步方式见 alauda/README.md；
+    # tag 行尾的 "# oauth2-proxy-tag" 为 CI 流水线读取版本的定位标记，请勿删除
+    oauth2-proxy:
+      repository: asm/oauth2-proxy
+      tag: "v7.15.1-r0" # oauth2-proxy-tag
+      support_arm: true
+      thirdparty: true
