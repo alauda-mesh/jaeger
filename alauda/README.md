@@ -34,54 +34,55 @@
 
 同步上游开源镜像（新版本或修复了安全漏洞的版本）。
 
-> **注意**：build-harbor.alauda.cn 的 tag 配置为不可变（immutable），同一 tag 只允许推送一次，之后无法覆盖推送——因此**不能**先把镜像推到最终 tag、再用 `crane mutate` 原地补 label（第二次推送会被 `PRECONDITION ... configured as immutable` 拒绝）。需按下述顺序操作：先同步到临时 tag，补全 label 后再写入最终 tag，让最终 tag 的唯一一次推送就携带完整的 provenance 元数据。
+> **注意**：build-harbor.alauda.cn 的 tag 配置为不可变（immutable），同一 tag 只允许推送一次，之后无法覆盖也无法删除。因此不要把镜像先推到 registry 再修改，而是用 [regctl](https://github.com/regclient/regclient)（macOS 安装：`brew install regclient`）在本地完成"过滤架构 + 补 label"，最后一次性推送最终 tag。推送前一切都在本地目录中，可自检、可反悔，registry 上只会出现一次成型的最终 tag。
 
-1. 从 quay.io 同步镜像到**临时 tag**（仅保留 linux/amd64、linux/arm64 两个架构）：
+1. 全量同步上游镜像到本地 OCI layout（会在当前目录生成 `o2p/` 工作目录）：
 
    ```bash
-   crane index filter \
-     quay.io/oauth2-proxy/oauth2-proxy:<version-tag> \
-     -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp \
-     --platform linux/amd64 \
-     --platform linux/arm64
+   regctl image copy quay.io/oauth2-proxy/oauth2-proxy:<version-tag> ocidir://o2p:src
    # 示例：
-   crane index filter \
-     quay.io/oauth2-proxy/oauth2-proxy:v7.15.2 \
-     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp \
-     --platform linux/amd64 \
-     --platform linux/arm64
+   regctl image copy quay.io/oauth2-proxy/oauth2-proxy:v7.15.2 ocidir://o2p:src
    ```
 
-2. 以临时 tag 为源补充 OCI provenance 元数据，并写入**最终 tag**。上游镜像已带 `org.opencontainers.image.source` 标签，还需补充 `org.opencontainers.image.revision`（上游 tag 对应的 commit SHA）与 `org.opencontainers.image.ref.name`（上游 tag）：
+2. 本地裁剪出 linux/amd64、linux/arm64 两个架构（上游其余平台与 buildkit attestation 一并丢弃）：
+
+   ```bash
+   regctl index create ocidir://o2p:filtered --ref ocidir://o2p:src \
+     --platform linux/amd64 --platform linux/arm64
+   ```
+
+3. 本地补充 OCI provenance 元数据（对 index 内全部架构生效）。上游镜像已带 `org.opencontainers.image.source` 标签，还需补充 `org.opencontainers.image.revision`（上游 tag 对应的 commit SHA）与 `org.opencontainers.image.ref.name`（上游 tag）：
 
    ```bash
    # 查询上游 tag 对应的 commit SHA（annotated tag 取带 ^{} 的那行）
    git ls-remote --tags https://github.com/oauth2-proxy/oauth2-proxy.git '<version-tag>*'
 
-   # 补充 provenance 标签并写入最终 tag（需要 crane >= v0.13，会对 index 内各架构镜像生效；
-   # 最终 tag 仅在此处推送一次，不会触发 immutable 限制）
-   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp \
+   regctl image mod ocidir://o2p:filtered \
      --label "org.opencontainers.image.revision=<upstream-commit-sha>" \
      --label "org.opencontainers.image.ref.name=<version-tag>" \
-     -t build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n>
+     --create ocidir://o2p:final
    # 示例：
-   crane mutate build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp \
+   regctl image mod ocidir://o2p:filtered \
      --label "org.opencontainers.image.revision=$(git ls-remote https://github.com/oauth2-proxy/oauth2-proxy.git 'refs/tags/v7.15.2^{}' | cut -f1)" \
      --label "org.opencontainers.image.ref.name=v7.15.2" \
-     -t build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-r0
+     --create ocidir://o2p:final
    ```
 
-   > 若此步仍报 `configured as immutable`，说明最终 tag 已被占用（例如此前曾把未打 label 的镜像直接同步到了该 tag）。被占用的 tag 无法覆盖也无法修复，换用下一个 `-r<n>` 序号（如 `-r1`）作为最终 tag 重新执行本步即可。可用 `crane config <最终tag> | jq '.config.Labels'` 检查已存在 tag 是否携带完整 label。
-
-3. 删除临时 tag。Harbor 不支持按 tag 删除 manifest（直接传 tag 会报 `UNSUPPORTED: unsupported digest ...: invalid checksum digest format`），需先解析出 digest 再删除：
+4. 本地自检架构列表与 label，确认无误后登录并一次性推送**最终 tag**（唯一一次推送，不触发 immutable 限制）：
 
    ```bash
-   crane delete "build-harbor.alauda.cn/asm/oauth2-proxy@$(crane digest build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-tmp)"
+   # 自检：index 应只含 amd64/arm64 两个平台，各平台 Labels 应含完整 provenance 三键
+   regctl manifest get ocidir://o2p:final
+   regctl image config ocidir://o2p:final -p linux/amd64 --format '{{json .Config.Labels}}'
+   regctl image config ocidir://o2p:final -p linux/arm64 --format '{{json .Config.Labels}}'
+
+   regctl registry login build-harbor.alauda.cn
+   regctl image copy ocidir://o2p:final build-harbor.alauda.cn/asm/oauth2-proxy:<version-tag>-r<n>
    # 示例：
-   crane delete "build-harbor.alauda.cn/asm/oauth2-proxy@$(crane digest build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-tmp)"
+   regctl image copy ocidir://o2p:final build-harbor.alauda.cn/asm/oauth2-proxy:v7.15.2-r1
    ```
 
-   > 按 digest 删除会移除该 artifact 及其**全部** tag。正常流程中临时 tag 的 digest 独立于最终 tag（`crane mutate` 产生了新 manifest），删除是安全的；但若同一镜像内容曾被直接推送到其他 tag（与临时 tag 同 digest），删除会连带那些 tag——命中该情况或删除被 tag 不可变规则拒绝时，改在 Harbor 界面单独删除临时 tag 即可，清理失败也不影响最终产物。
+   > 若推送报 `configured as immutable`，说明最终 tag 已被占用（例如此前误推过未打 label 的版本），被占用的 tag 无法覆盖也无法修复，换下一个 `-r<n>` 序号重推即可（可用 `regctl image config build-harbor.alauda.cn/asm/oauth2-proxy:<tag> -p linux/amd64 --format '{{json .Config.Labels}}'` 检查已占用 tag 是否携带完整 label）。推送完成后本地 `o2p/` 目录可直接删除。
 
 同步完成后，更新 [jaeger-cluster-plugin/values.yaml](./jaeger-cluster-plugin/values.yaml) 中 `oauth2-proxy.tag` 为新版本（保留行尾的 `# oauth2-proxy-tag` 标记，CI 流水线依赖它读取并输出该版本）。
 
