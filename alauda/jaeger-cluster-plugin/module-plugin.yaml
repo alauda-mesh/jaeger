@@ -16,7 +16,7 @@ spec:
   - chartVersions:
     - name: asm/jaeger-cluster-plugin
       releaseName: jaeger-cluster-plugin
-      version: v2.16.0-r2
+      version: v2.1.0-r0
     name: jaeger-cluster-plugin
   deleteable: true
   description:

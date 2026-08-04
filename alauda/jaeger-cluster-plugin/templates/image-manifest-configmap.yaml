@@ -10,12 +10,14 @@ data:
     This ConfigMap is created by the Alauda Build of Jaeger v2 cluster plugin.
     The container images packaged with the plugin are synchronized to the
     platform's built-in registry when the plugin is installed:
-      - version:  version of the Alauda Build of Jaeger v2 distribution;
-      - registry: registry address shared by all packaged images;
-      - *-image:  full pullable address (including the registry prefix) of
-                  each packaged image, which can be referenced directly when
-                  deploying the Alauda Distributed Tracing components.
-  version: {{ .Chart.AppVersion | quote }}
+      - version:        version of the Alauda Build of Jaeger v2 cluster plugin;
+      - jaeger-version: version of the upstream Jaeger distribution;
+      - registry:       registry address shared by all packaged images;
+      - *-image:        full pullable address (including the registry prefix)
+                        of each packaged image, which can be referenced directly
+                        when deploying the Alauda Distributed Tracing components.
+  version: {{ .Chart.Version | quote }}
+  jaeger-version: {{ .Chart.AppVersion | quote }}
   registry: {{ .Values.global.registry.address | quote }}
   jaeger-image: {{ include "jaeger-cluster-plugin.image" (dict "ctx" . "name" "jaeger") | quote }}
   jaeger-es-rollover-image: {{ include "jaeger-cluster-plugin.image" (dict "ctx" . "name" "jaeger-es-rollover") | quote }}
