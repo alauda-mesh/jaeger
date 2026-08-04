@@ -11,6 +11,8 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/alauda-build-jaeger.yaml"
+      # 排除所有 Markdown 文件：纯文档改动不触发构建（与代码混合提交时仍会触发）
+      - "!**.md"
   push:
     tags:
       # 集群插件发布 tag（如 plugin-v2.1.0-r0）；
