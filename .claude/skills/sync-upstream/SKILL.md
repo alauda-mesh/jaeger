@@ -20,7 +20,7 @@ disable-model-invocation: true
 
 - 上游 tag：`git ls-remote --tags https://github.com/jaegertracing/jaeger.git 'v*'` 中最新的正式版本（排除 `^{}` 行与预发布）；
 - 目标分支推荐 `main`；
-- ACP 产品版本按 `alauda/README.md` Release 章节规则推荐：Jaeger 升级时在当前 `alauda/jaeger-cluster-plugin/Chart.yaml` 的 `version` 基础上递增 minor 并回到 `-r0`（如 `v2.1.0-r0` → `v2.2.0-r0`）。
+- ACP 产品版本按 `alauda/README.md` Release 章节规则推荐：Jaeger 升级时在当前 `alauda/jaeger-cluster-plugin/Chart.yaml` 的 `version` 基础上递增 minor 并回到 `-r0`（如 `v2.1.0-r0` → `v2.2.0-r0`）。例外：若当前版本尚未正式发版（`git ls-remote --tags origin 'plugin-*'` 中没有对应 `plugin-<版本>` tag），保持当前版本原地升级 Jaeger 也是合理选择（v2.20.0 同步即如此），以用户传入值为准。
 
 ## 背景知识
 
@@ -29,10 +29,10 @@ disable-model-invocation: true
   - `cmd/jaeger/Dockerfile`、`cmd/es-rollover/Dockerfile`、`cmd/es-index-cleaner/Dockerfile`：`ARG base_image` /（jaeger 还有 `ARG debug_image`）增加了 `=scratch` 默认值；
   - `scripts/makefiles/BuildBinaries.mk`：`build-es-index-cleaner` / `build-es-rollover` 改走 `_build-a-binary-*` 通用规则；
   - `scripts/makefiles/BuildInfo.mk`：ldflags 追加了 `$(LD_EXTRAFLAGS)`。
-- `idl`、`jaeger-ui` 是指向上游仓库的 submodule，合并后由脚本 `git submodule update` 对齐到上游 tag 记录的 commit；jaeger-ui 恰好位于 release tag 时，`make build-jaeger` 的 rebuild-ui 会直接下载预构建 UI 资产，无需本地 node 环境。
+- `idl`、`jaeger-ui` 是指向上游仓库的 submodule，合并后由脚本 `git submodule update` 对齐到上游 tag 记录的 commit；jaeger-ui 恰好位于 release tag 时，`make build-jaeger` 的 rebuild-ui 会直接下载预构建 UI 资产（curl），无需本地 node 环境。注意 `git submodule status` 的描述只认 annotated tag，而 jaeger-ui 的 release tag 是 lightweight，会显示成 `v1.10.0-NNN-g...` 之类的误导值；判断是否位于 release tag 以 `git -C jaeger-ui describe --tags` 为准（sync/build 脚本均已输出）。
 - 版本双轴（详见 `alauda/README.md`）：`Chart.yaml` 的 `appVersion` = 上游 Jaeger 版本（如 `2.20.0`），`version` = 集群插件/ACP 产品版本（如 `v2.2.0-r0`）；统一用 chart 自带的 `hack/update-version.sh` 修改，`values.yaml` 行尾 `# jaeger-tag`、`# oauth2-proxy-tag` 标记不可删除。
-- 全程禁止 `git commit --amend`，一律创建新 commit，且 commit 不携带 Co-Authored-By 等 trailer。步骤 4 之前不要 push、不要建 PR；create-pr.sh 只推送同步分支和上游 tag 对象。
-- PR 会同时触发上游完整 CI 和 `Alauda Build Jaeger` 流水线。fork 上已知与环境相关、并非同步引入的失败项（历史 PR #6 亦如此）：`Coverage Gate`、`Metrics Comparison`、`dependency-review`、`All CI Checks Passed` 聚合项。watch-pipeline.sh 会把它们记为 WARN 而不算失败，但要在最终汇报中如实列出。
+- 全程禁止 `git commit --amend`，一律创建新 commit，且 commit 不携带 Co-Authored-By 等 trailer；所有自建 commit 必须带 `Signed-off-by`（`git commit -s`，脚本内的 commit 已内置），上游 dco-check 会检查 PR 内所有非 merge commit 的签名。步骤 4 之前不要 push、不要建 PR；create-pr.sh 只推送同步分支和上游 tag 对象。
+- PR 会同时触发上游完整 CI 和 `Alauda Build Jaeger` 流水线。fork 上已知的、并非同步引入的失败项：`Coverage Gate`、`Metrics Comparison`、`dependency-review`、`All CI Checks Passed` 聚合项（以上与 fork 环境有关），以及 `dco-check`（对同步 PR 结构性失败：它全量检查 PR 相对 main 的所有 commit，上游历史 commit 存在 sign-off 与作者名不一致或缺失的情况，fork 无法改写上游历史）。watch-pipeline.sh 会把它们记为 WARN 而不算失败，但要在最终汇报中如实列出。注意 PR #6 是集群插件功能 PR 而非同步 PR，v2.20.0 的 PR #7 才是首个同步 PR，其失败模式对后续同步更有参照性。
 
 ## 步骤 1：同步上游 tag
 
@@ -42,7 +42,15 @@ bash "$SKILL_DIR/scripts/sync.sh" <上游tag> <目标分支>
 
 脚本会自动：前置检查（工作区干净、无进行中合并）→ 确保 upstream remote → fetch 目标分支与上游 tag → 基于 `origin/<目标分支>` 创建 `sync/<tag>` 分支 → merge 上游 tag → 对齐 submodule。按结果处理：
 
-- **MERGED（退出码 0）**：合并成功，继续步骤 2。
+- **MERGED（退出码 0）**：合并成功。git 自动合并成功不代表 alauda 定制完好（上游可能改写了相邻代码），继续步骤 2 之前先验证 5 个定制点仍在：
+
+  ```bash
+  grep -n 'ARG base_image\|ARG debug_image' cmd/jaeger/Dockerfile cmd/es-rollover/Dockerfile cmd/es-index-cleaner/Dockerfile
+  grep -n '_build-a-binary-es' scripts/makefiles/BuildBinaries.mk
+  grep -n 'LD_EXTRAFLAGS' scripts/makefiles/BuildInfo.mk
+  ```
+
+  应看到：3 个 Dockerfile 均有 `=scratch` 默认值、BuildBinaries.mk 的 es-* 目标走 `_build-a-binary-*` 规则、BuildInfo.mk 的 ldflags 含 `$(LD_EXTRAFLAGS)`。缺失则按背景知识恢复并记录。
 - **UP_TO_DATE（退出码 0）**：目标分支已包含该 tag，无需同步，直接向用户汇报并结束。
 - **CONFLICT（退出码 2）**：合并冲突，需要你逐文件解决。原则：
   - 背景知识里列出的 5 个被 alauda 定制过的上游文件：保留 alauda 改动的同时合入上游新变化，通常是"都要"而不是二选一；
@@ -95,8 +103,9 @@ bash "$SKILL_DIR/scripts/watch-pipeline.sh" <PR编号>
 - **PIPELINE_SUCCESS（退出码 0）**：把输出的镜像/chart 地址与 WARN 项纳入最终汇报。
 - **PIPELINE_FAILED（退出码 2）**：输出已附失败 job 与日志摘要，分析失败原因：
   - `Alauda Build Jaeger` 失败：二进制构建失败通常与本地构建同因；镜像构建失败多与 Dockerfile 的冲突处理有关；chart 相关失败检查 `hack/update-version.sh` 依赖的标记行是否被合并破坏；
-  - 上游 CI 失败（lint / 单测 / e2e）：多为合并后的真实回归或冲突解决引入的问题，用 `gh run view <run-id> --repo alauda-mesh/jaeger --log-failed` 定位；
-  - 判断属同步引入的问题：修复 → 新 commit → `git push origin HEAD`（每次 push 都会重触发全部流水线，修复要攒成一批一次推）→ 重新后台运行 watch-pipeline.sh；拿不准的修复先向用户提问。
+  - 上游 CI 失败（lint / 单测 / e2e）：多为合并后的真实回归或冲突解决引入的问题，用 `gh run view <run-id> --repo alauda-mesh/jaeger --log-failed` 定位；self-hosted runner 的日志混有大量安全代理（harden-runner/armour）噪音，先用 `gh run view --job <job-id>` 看步骤级结论定位失败 step，再对日志 grep 关键词，比通读日志高效得多；
+  - 已见过的两类失败模式（v2.20.0 同步）：① 上游 lint 规则扩大扫描范围波及 alauda 自有文件——如 lint-license 把 alauda 的 yaml 纳入检查，本地跑对应 lint 目标（如 `make lint-license`，updateLicense.py 会就地补头）修复后提交；② 上游 CI 步骤对 self-hosted runner 环境有新要求或 runner 组件损坏——如上游 setup-node.js 改用 pnpm 后踩中 runner 自带 npm 损坏，此类优先考虑"该步骤对 alauda 构建是否必要"（jaeger-ui 位于 release tag 时 UI 资产走 curl 下载，Node.js 完全不需要，直接从 alauda workflow 删除该步骤），实在需要的环境组件才提示用户修 runner；
+  - 判断属同步引入的问题：修复 → 新 commit（带 `-s`）→ `git push origin HEAD`（每次 push 都会重触发全部流水线，修复要攒成一批一次推）→ 重新后台运行 watch-pipeline.sh；拿不准的修复先向用户提问。
 - **PIPELINE_TIMEOUT（退出码 3）**：告知用户流水线仍在运行，附链接；之后可重跑 watch-pipeline.sh 继续等待。
 - **PIPELINE_NOT_FOUND（退出码 4）**：按脚本提示排查（runner 离线、paths 未触发等），如实告知用户。
 

@@ -22,8 +22,11 @@ PR="$1"
 WORKFLOW="alauda-build-jaeger.yaml"
 POLL_SECONDS=60
 TIMEOUT_MINUTES="${WATCH_TIMEOUT_MINUTES:-60}"
-# 已知与 fork 环境相关、非同步引入的失败检查项（历史 PR #6 亦如此）：命中时仅记 WARN
-KNOWN_ENV_FAIL_REGEX='^(Coverage Gate|Metrics Comparison|All CI Checks Passed)$|dependency-review'
+# 已知与 fork 场景相关、非同步引入的失败检查项：命中时仅记 WARN。
+# dco-check 对同步 PR 结构性失败：它全量检查 PR 相对 main 的所有 commit（--no-merges），
+# 上游历史 commit 存在 sign-off 与作者名不一致/缺失的情况，fork 无法改写上游历史；
+# 自建 commit 脚本均已带 -s，不会额外添乱。
+KNOWN_ENV_FAIL_REGEX='^(Coverage Gate|Metrics Comparison|All CI Checks Passed)$|dependency-review|dco-check'
 
 DEADLINE=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
 NOT_FOUND_DEADLINE=$(( $(date +%s) + 300 ))   # 5 分钟内找不到 run 视为未触发

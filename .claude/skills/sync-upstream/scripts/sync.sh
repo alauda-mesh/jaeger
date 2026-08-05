@@ -45,17 +45,23 @@ git checkout -b "$BRANCH" "origin/${TARGET}"
 printf 'TAG=%s\nTARGET=%s\nBRANCH=%s\n' "$TAG" "$TARGET" "$BRANCH" > "$STATE_FILE"
 
 info "merge ${TAG} 到 ${BRANCH}..."
-if ! git merge --no-ff --no-edit -m "chore: merge upstream ${TAG} into ${TARGET}" "refs/tags/${TAG}"; then
+# merge 输出（含数千行 diffstat）重定向到日志文件，避免刷屏；--signoff 满足上游 DCO 惯例
+MERGE_LOG=$(mktemp "${TMPDIR:-/tmp}/sync-upstream-merge.XXXXXX.log")
+if ! git merge --no-ff --no-edit --signoff \
+        -m "chore: merge upstream ${TAG} into ${TARGET}" "refs/tags/${TAG}" \
+        >"$MERGE_LOG" 2>&1; then
     if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
         echo
-        info "合并出现冲突，冲突文件："
+        info "合并出现冲突（完整 merge 输出：${MERGE_LOG}），冲突文件："
         git diff --name-only --diff-filter=U | sed 's/^/  /'
         info "请按 SKILL.md 的冲突解决原则逐个处理，git add 后运行 scripts/finish-merge.sh"
         echo "RESULT=CONFLICT"
         exit 2
     fi
+    tail -n 50 "$MERGE_LOG"
     die "merge 失败且无 MERGE_HEAD，请查看上方 git 输出定位原因"
 fi
+info "merge 完成：$(git show --shortstat --format='' HEAD | tail -n 1 | sed 's/^ *//')（完整输出：${MERGE_LOG}）"
 
 post_merge_finalize "$TAG" "$TARGET"
 echo "RESULT=MERGED"

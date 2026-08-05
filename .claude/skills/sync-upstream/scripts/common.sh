@@ -82,6 +82,9 @@ post_merge_finalize() {
     git submodule update --init --recursive
     info "submodule 状态："
     git submodule status | sed 's/^/  /'
+    # 注意：git submodule status 的描述只认 annotated tag，jaeger-ui 的 release tag 是
+    # lightweight，会显示成 v1.10.0-NNN-g... 之类的误导值；以下面 --tags 的结果为准
+    info "jaeger-ui 实际位置（describe --tags）：$(git -C jaeger-ui describe --tags --always 2>/dev/null || echo 未知)"
     local merged_count
     merged_count=$(git rev-list --count "origin/${target}..refs/tags/${tag}^{commit}" 2>/dev/null || echo "?")
     info "本次合入的上游提交数（相对 origin/${target}）：${merged_count}"
