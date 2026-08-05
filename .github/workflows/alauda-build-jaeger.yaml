@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 name: Alauda Build Jaeger
 
 on:
@@ -140,10 +143,8 @@ jobs:
           go-version: 1.26
           cache: false
 
-      # jaeger-query 包含 UI，提前统一安装，对 es-rollover 构建无影响
-      - name: Setup Node.js version
-        uses: ./.github/actions/setup-node.js
-
+      # 不安装 Node.js：同步流程保证 jaeger-ui submodule 始终位于上游 release tag，
+      # rebuild-ui.sh 会直接下载预构建 UI 资产（curl），不会走需要 node/pnpm 的源码构建
       - name: Install CI tools
         run: make install-ci
 
