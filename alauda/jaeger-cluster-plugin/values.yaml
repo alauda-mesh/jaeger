@@ -31,6 +31,6 @@ global:
     # tag 行尾的 "# oauth2-proxy-tag" 为 CI 流水线读取版本的定位标记，请勿删除
     oauth2-proxy:
       repository: asm/oauth2-proxy
-      tag: "v7.15.1-r0" # oauth2-proxy-tag
+      tag: "v7.15.3-9-g14af2951" # oauth2-proxy-tag
       support_arm: true
       thirdparty: true
