@@ -11,17 +11,17 @@ global:
     # tag 行尾的 "# jaeger-tag" 为脚本的定位标记，请勿删除
     jaeger:
       repository: asm/jaeger
-      tag: "2.16.0-2.1.0-r0" # jaeger-tag
+      tag: "2.20.0-2.1.0-r0" # jaeger-tag
       support_arm: true
       thirdparty: false
     jaeger-es-rollover:
       repository: asm/jaeger-es-rollover
-      tag: "2.16.0-2.1.0-r0" # jaeger-tag
+      tag: "2.20.0-2.1.0-r0" # jaeger-tag
       support_arm: true
       thirdparty: false
     jaeger-es-index-cleaner:
       repository: asm/jaeger-es-index-cleaner
-      tag: "2.16.0-2.1.0-r0" # jaeger-tag
+      tag: "2.20.0-2.1.0-r0" # jaeger-tag
       support_arm: true
       thirdparty: false
     # OAuth2 Proxy 镜像，从上游同步、版本独立维护，同步方式见 alauda/README.md；
