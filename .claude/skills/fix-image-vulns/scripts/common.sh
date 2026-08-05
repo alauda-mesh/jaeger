@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # fix-image-vulns 公共函数与状态管理。
 # 状态目录 .tmp/fix-image-vulns/（.tmp/ 在 .gitignore 内）：
 #   state.env          键值状态（ROUND、BASE_BRANCH、FIX_BRANCH、PR_NUMBER 等），脚本间传递

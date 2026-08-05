@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # 步骤 2c：在修复 worktree 中升级 go.mod 依赖并做本地构建验证。
 # 用法: gomod-bump.sh <module@vX.Y.Z> [module@vX.Y.Z ...]
 #       gomod-bump.sh --build-only        # 只做构建验证（如仅改了 go-version 时）

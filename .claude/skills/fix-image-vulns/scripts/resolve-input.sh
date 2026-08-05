@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # 步骤 1a：解析输入（流水线 run 或镜像地址）→ 待扫描镜像清单，初始化本次任务状态。
 # 用法: resolve-input.sh <RUN_ID|run URL|镜像地址> ...
 #   - RUN_ID / run URL：只接受 Alauda Build Jaeger 流水线的成功 run，

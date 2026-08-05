@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # 步骤 2a：基于当前分支（resolve 时记录的 BASE_BRANCH）创建修复分支。
 # 用法: create-fix-branch.sh
 # 用 git worktree（.tmp/fix-image-vulns/worktree），不打扰主工作区当前检出。

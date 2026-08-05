@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # 步骤 2b：升级修复 worktree 中 alauda-build-jaeger.yaml 的 go-version（修 go stdlib 漏洞）。
 # 用法: update-go-version.sh <X.Y.Z>   例: update-go-version.sh 1.26.7
 #   版本格式与 setup-go 一致（不带 go 前缀）。

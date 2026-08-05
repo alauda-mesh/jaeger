@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # 步骤 4：监控修复 PR 触发的 Alauda Build Jaeger run，成功后收集新镜像供回归扫描。
 # 按 PR 当前 head sha 精确匹配 run（回归轮多次 push 也不会误拿旧 run）。
 # 成功: ROUND+1，生成 images-round<N+1>.tsv（PR 构建的镜像，含 oauth2-proxy）；

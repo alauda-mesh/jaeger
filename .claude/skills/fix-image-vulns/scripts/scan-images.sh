@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # 步骤 1b / 步骤 5：调内网扫描服务扫当前轮镜像，并按修复责任分类。
 # 用法: scan-images.sh [轮次]   缺省用状态里的 ROUND
 # 分类:

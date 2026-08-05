@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 # 步骤 3：push 修复分支并创建 PR（base = 基线分支，--repo alauda-mesh/jaeger，不能推社区上游）。
 # 用法: create-pr.sh <PR正文文件>
 # 幂等：修复分支已有 open PR 时直接复用（回归轮 push 新 commit 即可）。
