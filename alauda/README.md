@@ -5,6 +5,16 @@
 1. 同步上游新版本（tag）代码：更新 `main` 分支以跟踪上游 [jaegertracing/jaeger](https://github.com/jaegertracing/jaeger) 最新发布版本。
 2. 同步后更新 [jaeger-cluster-plugin/Chart.yaml](./jaeger-cluster-plugin/Chart.yaml) 的 `appVersion` 为新的上游版本（如 `2.17.0`），CI 流水线以该字段作为 Jaeger 版本的事实源。
 
+## 版本升级
+
+上述流程已封装为 Claude Code skill [sync-upstream](../.claude/skills/sync-upstream/SKILL.md)，自动完成：merge 上游 tag（含 idl / jaeger-ui submodule 对齐与冲突处理）→ 本地构建验证 3 个二进制 → 更新集群插件 Chart 版本 → 创建 PR 到 alauda-mesh/jaeger 并监控流水线，最后汇报并提醒手动同步 oauth2-proxy 镜像。
+
+在 Claude Code 中显式调用，参数依次为：上游 tag、目标分支、ACP 产品版本（即集群插件 chart 版本）：
+
+```text
+/sync-upstream v2.20.0 main v2.2.0-r0
+```
+
 ## Release
 
 版本采用两条独立的版本轴：
