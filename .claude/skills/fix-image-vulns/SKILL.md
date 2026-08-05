@@ -33,6 +33,7 @@ disable-model-invocation: true
 - 修复基线 = 主工作区**当前检出分支**（通常 main）。修复在独立 worktree 中进行，不打扰主工作区。
 - **PR 检查分层**：PR 必须让 **Alauda Build Jaeger** 流水线成功（产出回归扫描用的新镜像）；PR 上同时会跑社区 CI（lint/test/coverage 等），在 fork 上属 best-effort——`Coverage Gate`、`Metrics Comparison` 历史上在 fork PR 就失败、不阻塞 merge，但 **dco-check 应保持绿**（本 skill 的 commit 一律 `git commit -s`），其余失败项要分析是否由本次升级引入并如实报告。
 - git 规矩：commit 一律 `git commit -s`（DCO），信息格式 `type(scope): Capitalized`；**禁止 amend**，一律新建 commit；**不加** Co-Authored-By / Claude-Session 尾注。gh 命令必须显式 `--repo alauda-mesh/jaeger`（脚本已内置），禁止推社区上游。
+- 维护本 skill：`$SKILL_DIR` 下的 `.sh` 同样受仓库 `make lint-license` 校验，新增脚本须先跑 `./scripts/lint/updateLicense.py <文件>` 补标准 license 头再提交，否则 main 与所有 PR 的社区 CI lint 全红。
 - 修复轮次上限 **3 轮**（首轮 + 回归后最多再修 2 次），修不完就如实汇报。
 - 状态目录 `.tmp/fix-image-vulns/`（gitignore 内），各脚本经 `state.env` 与若干 tsv 串联。
 
@@ -107,6 +108,8 @@ bash "$SKILL_DIR/scripts/create-pr.sh" <正文文件>    # 输出 PR_NUMBER= / P
 bash "$SKILL_DIR/scripts/watch-pr.sh"
 ```
 
+等待期间查进度直接 Read 后台任务的输出文件；不要前台 `sleep` 轮询（harness 会拦截），确需定时等待用 Monitor 工具。
+
 脚本按 PR 当前 head sha 精确匹配 run，成功时自动收集 PR 构建出的新镜像并把轮次 +1，同时汇总社区 CI check 状态。按退出结果处理：
 
 - **BUILD_SUCCESS（0）**：进入步骤 5。输出里列出的社区 CI 失败项要分析：与本次修复相关（如 lint/test 因依赖升级挂掉）则修复；fork 固有失败（Coverage Gate、Metrics Comparison 等）如实记入最终报告即可；
@@ -114,13 +117,19 @@ bash "$SKILL_DIR/scripts/watch-pr.sh"
 - **PIPELINE_TIMEOUT（3）**：告知用户流水线仍在运行，稍后可重跑本脚本继续等；
 - **RUN_NOT_FOUND（4）**：按脚本提示排查，如实告知用户。
 
+社区 CI 失败归因技巧：
+
+- 先判断失败是否继承自基线：`gh run list --repo alauda-mesh/jaeger --branch main --workflow "CI Orchestrator" --limit 3`，base commit 自身就红的项不是本次修复引入的；
+- `All CI Checks Passed` 是聚合 check，随任一 stage 失败而红，不单独归因；
+- 社区 CI 的 `--log-failed` 输出会被 self-hosted runner 安全代理日志（agentservice / armour / hardenrunner）淹没：先 `gh run view <run> --json jobs` 定位 conclusion=failure 的 job，再按 `--job <id>` 拉日志并 `grep -vE 'agentservice|armour|hardenrunner'` 过滤后找 `Error / ##[error]` 行。
+
 ## 步骤 5：回归扫描与迭代
 
 ```bash
 bash "$SKILL_DIR/scripts/scan-images.sh"    # ROUND 已 +1，自动扫 PR 构建的新镜像
 ```
 
-- **CLEAN / REPORT_ONLY**：修复完成，进入最终汇报；
+- **CLEAN / REPORT_ONLY**：修复完成——先用 `gh pr comment --repo alauda-mesh/jaeger` 把回归扫描结论与社区 CI 失败归因回填到 PR 供 review 参考，再进入最终汇报；
 - **FIX_NEEDED**：先分析为什么还有漏洞（上轮目标版本仍带 CVE？升级未生效？新版本引入新漏洞？），再回到步骤 2 继续修——不新建分支，在原 worktree 追加 commit → create-pr.sh push → 后台 watch-pr.sh → 再扫描。
 
 **最多 3 轮修复**。到限仍未清零时停止，如实汇报剩余漏洞、已尝试的措施和失败原因，让用户决策。
