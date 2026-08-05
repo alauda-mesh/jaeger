@@ -22,6 +22,7 @@
 #
 # 示例：
 #   ./hack/update-version.sh v2.1.0-r0 2.16.0
+#   ./hack/update-version.sh v2.1.0-rc.1 2.16.0
 #   ./hack/update-version.sh v2.1.0-pr.6.123 2.16.0
 # ============================================================================
 
@@ -38,9 +39,9 @@ CHART_VERSION="v${1#v}"
 # Jaeger 版本为纯上游语义版本（若入参带 v 前缀则去掉）
 JAEGER_VERSION="${2#v}"
 
-# 校验版本格式，防止误传旧式单参数（如 2.16.0-r2）或缺少 -rN / -pr.* 后缀
-if ! printf '%s' "$CHART_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+-(r[0-9]+|pr\.[0-9]+\.[0-9]+)$'; then
-    echo "错误：chart 版本格式无效：${CHART_VERSION}（应为 vX.Y.Z-rN 或 vX.Y.Z-pr.<PR号>.<运行号>）" >&2
+# 校验版本格式，防止误传旧式单参数（如 2.16.0-r2）或缺少必需的版本后缀
+if ! printf '%s' "$CHART_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+-(r[0-9]+|rc\.[0-9]+|pr\.[0-9]+\.[0-9]+)$'; then
+    echo "错误：chart 版本格式无效：${CHART_VERSION}（应为 vX.Y.Z-rN、vX.Y.Z-rc.N 或 vX.Y.Z-pr.<PR号>.<运行号>）" >&2
     exit 1
 fi
 if ! printf '%s' "$JAEGER_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
