@@ -29,7 +29,7 @@ disable-model-invocation: true
   - `cmd/jaeger/Dockerfile`、`cmd/es-rollover/Dockerfile`、`cmd/es-index-cleaner/Dockerfile`：`ARG base_image` /（jaeger 还有 `ARG debug_image`）增加了 `=scratch` 默认值；
   - `scripts/makefiles/BuildBinaries.mk`：`build-es-index-cleaner` / `build-es-rollover` 改走 `_build-a-binary-*` 通用规则；
   - `scripts/makefiles/BuildInfo.mk`：ldflags 追加了 `$(LD_EXTRAFLAGS)`。
-- `idl`、`jaeger-ui` 是指向上游仓库的 submodule，合并后由脚本 `git submodule update` 对齐到上游 tag 记录的 commit；jaeger-ui 恰好位于 release tag 时，`make build-jaeger` 的 rebuild-ui 会直接下载预构建 UI 资产（curl），无需本地 node 环境。注意 `git submodule status` 的描述只认 annotated tag，而 jaeger-ui 的 release tag 是 lightweight，会显示成 `v1.10.0-NNN-g...` 之类的误导值；判断是否位于 release tag 以 `git -C jaeger-ui describe --tags` 为准（sync/build 脚本均已输出）。
+- `idl`、`jaeger-ui` 是指向上游仓库的 submodule，合并后由脚本 `git submodule update` 对齐到上游 tag 记录的 commit；jaeger-ui 恰好位于 release tag 时，`make build-jaeger` 的 rebuild-ui 会直接下载预构建 UI 资产（curl），无需本地 node 环境。注意 `git submodule status` 的描述只认 annotated tag，而 jaeger-ui 的 release tag 是 lightweight，会显示成 `v1.10.0-NNN-g...` 之类的误导值；判断是否位于 release tag 以 `git -C jaeger-ui describe --tags` 为准（sync/build 脚本均已输出）。另一关键坑：make 的 build-ui 依赖只认 `jaeger-ui/packages/jaeger-ui/build/index.html` 是否存在、不校验新旧——本地与 self-hosted runner 的 workspace 都跨次复用，残留的旧版 build/ 会被原样打进二进制且构建全绿（v2.20.0 首跑时 runner 残留导致 v2.16.0 UI 被打进 v2.20.0 镜像，UI 不可用）。build.sh 与 alauda workflow 已内置防线（submodule clean → 强制 `make rebuild-ui` → 内嵌资产名单校验），勿删除。
 - 版本双轴（详见 `alauda/README.md`）：`Chart.yaml` 的 `appVersion` = 上游 Jaeger 版本（如 `2.20.0`），`version` = 集群插件/ACP 产品版本（如 `v2.2.0-r0`）；统一用 chart 自带的 `hack/update-version.sh` 修改，`values.yaml` 行尾 `# jaeger-tag`、`# oauth2-proxy-tag` 标记不可删除。
 - 全程禁止 `git commit --amend`，一律创建新 commit，且 commit 不携带 Co-Authored-By 等 trailer；所有自建 commit 必须带 `Signed-off-by`（`git commit -s`，脚本内的 commit 已内置），上游 dco-check 会检查 PR 内所有非 merge commit 的签名。步骤 4 之前不要 push、不要建 PR；create-pr.sh 只推送同步分支和上游 tag 对象。
 - PR 会同时触发上游完整 CI 和 `Alauda Build Jaeger` 流水线。fork 上已知的、并非同步引入的失败项：`Coverage Gate`、`Metrics Comparison`、`dependency-review`、`All CI Checks Passed` 聚合项（以上与 fork 环境有关），以及 `dco-check`（对同步 PR 结构性失败：它全量检查 PR 相对 main 的所有 commit，上游历史 commit 存在 sign-off 与作者名不一致或缺失的情况，fork 无法改写上游历史）。watch-pipeline.sh 会把它们记为 WARN 而不算失败，但要在最终汇报中如实列出。注意 PR #6 是集群插件功能 PR 而非同步 PR，v2.20.0 的 PR #7 才是首个同步 PR，其失败模式对后续同步更有参照性。
@@ -67,7 +67,7 @@ bash "$SKILL_DIR/scripts/sync.sh" <上游tag> <目标分支>
 bash "$SKILL_DIR/scripts/build.sh" <上游tag>
 ```
 
-依次构建 jaeger（含 UI）、es-rollover、es-index-cleaner 并用 `--help` 验证，构建方式与 CI 一致（`SKIP_DEBUG_BINARIES=1`、`GIT_CLOSEST_TAG=<tag>`）。
+先强制 `make rebuild-ui` 重建 UI 资产（防 workspace 陈旧残留），再依次构建 jaeger（含 UI）、es-rollover、es-index-cleaner 并用 `--help` 验证，最后校验 jaeger 二进制内嵌的 UI 资产名单与 jaeger-ui 构建产物一致。构建方式与 CI 一致（`SKIP_DEBUG_BINARIES=1`、`GIT_CLOSEST_TAG=<tag>`）。
 
 - **BUILD_OK（退出码 0）**：继续步骤 3。
 - **BUILD_FAILED（退出码 2）**：读脚本列出的失败日志，分析并修复。常见方向：上游构建体系变动波及 alauda 定制的 `.mk` 文件（对照上游本次 tag 的改动调整）；`go.mod` 要求更高的 Go 版本（本地与 CI 工具链需同步升级）；rebuild-ui 下载 UI 资产失败（确认 jaeger-ui submodule 是否位于上游 release tag、网络是否可达；否则需要 node 环境完整构建）。属同步范畴的修复直接改并创建新 commit；修完重跑 build.sh 直到通过。
@@ -107,8 +107,8 @@ bash "$SKILL_DIR/scripts/watch-pipeline.sh" <PR编号>
 - **PIPELINE_FAILED（退出码 2）**：输出已附失败 job 与日志摘要，分析失败原因：
   - `Alauda Build Jaeger` 失败：二进制构建失败通常与本地构建同因；镜像构建失败多与 Dockerfile 的冲突处理有关；chart 相关失败检查 `hack/update-version.sh` 依赖的标记行是否被合并破坏；
   - 上游 CI 失败（lint / 单测 / e2e）：多为合并后的真实回归或冲突解决引入的问题，用 `gh run view <run-id> --repo alauda-mesh/jaeger --log-failed` 定位；self-hosted runner 的日志混有大量安全代理（harden-runner/armour）噪音，先用 `gh run view --job <job-id>` 看步骤级结论定位失败 step，再对日志 grep 关键词，比通读日志高效得多；
-  - 已见过的两类失败模式（v2.20.0 同步）：① 上游 lint 规则扩大扫描范围波及 alauda 自有文件——如 lint-license 把 alauda 的 yaml 纳入检查，本地跑对应 lint 目标（如 `make lint-license`，updateLicense.py 会就地补头）修复后提交；② 上游 CI 步骤对 self-hosted runner 环境有新要求或 runner 组件损坏——如上游 setup-node.js 改用 pnpm 后踩中 runner 自带 npm 损坏，此类优先考虑"该步骤对 alauda 构建是否必要"（jaeger-ui 位于 release tag 时 UI 资产走 curl 下载，Node.js 完全不需要，直接从 alauda workflow 删除该步骤），实在需要的环境组件才提示用户修 runner；
-  - 判断属同步引入的问题：修复 → 新 commit（带 `-s`）→ `git push origin HEAD`（每次 push 都会重触发全部流水线，修复要攒成一批一次推）→ 重新后台运行 watch-pipeline.sh；拿不准的修复先向用户提问。
+  - 已见过的两类失败模式（v2.20.0 同步）：① 上游 lint 规则扩大扫描范围波及 alauda 自有文件——如 lint-license 把 alauda 的 yaml 纳入检查，本地跑对应 lint 目标（如 `make lint-license`，updateLicense.py 会就地补头）修复后提交；② 上游 CI 步骤对 self-hosted runner 环境有新要求或 runner 组件损坏——如上游 setup-node.js 改用 pnpm 后踩中 runner 自带 npm 损坏，此类优先考虑"该步骤对 alauda 构建是否必要"（jaeger-ui 位于 release tag 时 UI 资产走 curl 下载，Node.js 完全不需要，直接从 alauda workflow 删除该步骤），实在需要的环境组件才提示用户修 runner；③ **流水线全绿≠产物正确**：self-hosted runner 的 `_work` 跨 run 复用、checkout 不清理 submodule 内 gitignore 文件，v2.20.0 首跑时 rebuild-ui 被 make 跳过、v2.16.0 残留 UI 被打进镜像，全部检查通过、用户实测 UI 打不开才暴露。workflow 已固化三道防线（`Clean submodule workspaces` / `Rebuild UI assets` / `Verify embedded UI assets`），PIPELINE_SUCCESS 后仍建议抽查 binaries job 日志：`rebuild-ui logs` 组存在、资产 `ls -lF` 时间戳与上游 release 相符；
+  - 判断属同步引入的问题：修复 → 新 commit（带 `-s`）→ `git push origin HEAD`（每次 push 都会重触发全部流水线——pull_request 的 paths 按整个 PR 的 diff 评估而非单次 push 的文件，纯文档/skill 提交也会触发；修复要攒成一批一次推）→ 收敛后重跑 watch-pipeline.sh；拿不准的修复先向用户提问。
 - **PIPELINE_TIMEOUT（退出码 3）**：告知用户流水线仍在运行，附链接；之后可重跑 watch-pipeline.sh 继续等待。
 - **PIPELINE_NOT_FOUND（退出码 4）**：按脚本提示排查（runner 离线、paths 未触发等），如实告知用户。
 
