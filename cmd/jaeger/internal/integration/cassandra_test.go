@@ -7,17 +7,16 @@ import (
 	"testing"
 
 	"github.com/jaegertracing/jaeger/internal/storage/integration"
+	"github.com/jaegertracing/jaeger/internal/storage/integration/capabilities"
 )
 
 func TestCassandraStorage(t *testing.T) {
-	integration.SkipUnlessEnv(t, "cassandra")
+	integration.SkipUnlessEnv(t, integration.StorageCassandra)
 	s := &E2EStorageIntegration{
 		ConfigFile: "../../config-cassandra.yaml",
 		StorageIntegration: integration.StorageIntegration{
-			CleanUp:                      purge,
-			GetDependenciesReturnsSource: true,
-
-			SkipList: integration.CassandraSkippedTests,
+			CleanUp:      purge,
+			Capabilities: capabilities.Cassandra(),
 		},
 	}
 	s.e2eInitialize(t, "cassandra")

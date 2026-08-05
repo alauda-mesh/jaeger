@@ -93,6 +93,7 @@ docker compose -f docker-compose-opensearch.yml up
 - Let the application run for a couple of minutes to ensure there is enough time series data to plot in the dashboard.
 - Navigate to Jaeger UI at http://localhost:16686/ and inspect the Monitor tab. Select `redis` service from the dropdown to see more than one endpoint.
 - For the Prometheus option, visualize raw metrics in the Prometheus UI at http://localhost:9090/query (e.g., [example query for trace spans](http://localhost:9090/query?g0.expr=traces_span_metrics_calls_total&g0.tab=0&g0.range_input=5m)).
+- Grafana is available at http://localhost:3000 with the Jaeger mixin dashboard pre-loaded (no login required). It uses native `timeseries` panels and is compatible with Grafana 12.
 
 **Warning:** The included ` docker compose` files use the `latest` version of Jaeger and other components. If your local Docker registry already contains older versions, which may still be tagged as `latest`, you may want to delete those images before running the full set, to ensure consistent behavior:
 
@@ -321,13 +322,21 @@ If the `groupByOperation=true` parameter is set, the response will include the o
       ],
 ```
 
-# Disabling Metrics Querying
+# Running Without Service Performance Monitoring
 
-As this is feature is opt-in only, disabling metrics querying simply involves omitting the `METRICS_STORAGE_TYPE` environment variable when starting-up jaeger-query or jaeger all-in-one.
+The SPM functionality (the Monitor tab in the UI and the `/api/metrics/*` endpoints) requires a metrics backend. Jaeger advertises backend capabilities to the UI at startup; when no metrics backend is configured, Jaeger does not advertise `metricsStorage` and the Monitor tab does not appear.
 
-For example, try removing the `METRICS_STORAGE_TYPE=prometheus` environment variable from the [docker-compose.yml](./docker-compose.yml) file.
+To reproduce this, comment out the `metrics` key from `extensions.jaeger_query.storage` in [config-spm.yaml](../../cmd/jaeger/config-spm.yaml):
 
-Then querying any metrics endpoints results in an error message:
+```yaml
+extensions:
+  jaeger_query:
+    storage:
+      traces: some_storage
+      # metrics: some_metrics_storage  # comment this out
+```
+
+Then querying any metrics endpoint returns:
 
 ```
 $ curl http://localhost:16686/api/metrics/minstep | jq .
@@ -338,8 +347,8 @@ $ curl http://localhost:16686/api/metrics/minstep | jq .
   "offset": 0,
   "errors": [
     {
-      "code": 405,
-      "msg": "metrics querying is currently disabled"
+      "code": 501,
+      "msg": "trace metrics are currently disabled - no metrics backend configured"
     }
   ]
 }

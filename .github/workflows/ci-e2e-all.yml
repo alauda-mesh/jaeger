@@ -1,3 +1,9 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+# Fan-out workflow that invokes all individual E2E integration test workflows
+# for every supported storage backend and feature.
+
 name: E2E Tests
 
 on:
@@ -39,3 +45,6 @@ jobs:
 
   tailsampling:
     uses: ./.github/workflows/ci-e2e-tailsampling.yml
+
+  ui-reverse-proxy:
+    uses: ./.github/workflows/ci-e2e-ui-reverse-proxy.yml

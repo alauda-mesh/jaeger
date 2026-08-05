@@ -5,20 +5,18 @@ package jaegerquery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/extensioncapabilities"
-	"go.opentelemetry.io/otel/trace"
 	nooptrace "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/zap"
 
 	queryapp "github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery/internal"
+	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery/internal/jaegerai/aihealth"
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery/querysvc"
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerstorage"
-	"github.com/jaegertracing/jaeger/internal/jtracer"
 	"github.com/jaegertracing/jaeger/internal/metrics"
 	"github.com/jaegertracing/jaeger/internal/storage/metricstore/disabled"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/metricstore"
@@ -35,11 +33,12 @@ var (
 )
 
 type server struct {
-	config      *Config
-	server      *queryapp.Server
-	telset      component.TelemetrySettings
-	closeTracer func(ctx context.Context) error
-	qs          *querysvc.QueryService
+	config         *Config
+	server         *queryapp.Server
+	aiHealth       *aihealth.Checker
+	telset         component.TelemetrySettings
+	qs             *querysvc.QueryService
+	tenancyManager *tenancy.Manager
 }
 
 func newServer(config *Config, otel component.TelemetrySettings) *server {
@@ -56,30 +55,10 @@ func (*server) Dependencies() []component.ID {
 }
 
 func (s *server) Start(ctx context.Context, host component.Host) error {
-	var tp trace.TracerProvider = nooptrace.NewTracerProvider()
-	success := false
-	if s.config.EnableTracing {
-		// TODO OTel-collector does not initialize the tracer currently
-		// https://github.com/open-telemetry/opentelemetry-collector/issues/7532
-		//nolint
-		tracerProvider, tracerCloser, err := jtracer.NewProvider(ctx, "jaeger")
-		if err != nil {
-			return fmt.Errorf("could not initialize a tracer: %w", err)
-		}
-		tp = tracerProvider
-		// Store closer for tracer if this function exists successfully,
-		// otherwise call the closer right away.
-		defer func(ctx context.Context) {
-			if success {
-				s.closeTracer = tracerCloser
-			} else {
-				tracerCloser(ctx)
-			}
-		}(ctx)
-	}
-
 	telset := telemetry.FromOtelComponent(s.telset, host)
-	telset.TracerProvider = tp
+	if !s.config.EnableTracing {
+		telset.TracerProvider = nooptrace.NewTracerProvider()
+	}
 	telset.Metrics = telset.Metrics.
 		Namespace(metrics.NSOptions{Name: "jaeger"}).
 		Namespace(metrics.NSOptions{Name: "query"})
@@ -117,6 +96,19 @@ func (s *server) Start(ctx context.Context, host component.Host) error {
 	}
 
 	tm := tenancy.NewManager(&s.config.Tenancy)
+	s.tenancyManager = tm
+
+	caps := querysvc.StorageCapabilities{
+		ArchiveStorage: opts.ArchiveTraceReader != nil && opts.ArchiveTraceWriter != nil,
+		MetricsStorage: s.config.Storage.Metrics != "",
+	}
+
+	s.aiHealth = buildAIHealthChecker(&s.config.QueryOptions, telset.Logger)
+
+	var aiHealthCheck func() bool
+	if s.aiHealth != nil {
+		aiHealthCheck = s.aiHealth.Current
+	}
 
 	s.server, err = queryapp.NewServer(
 		ctx,
@@ -124,6 +116,8 @@ func (s *server) Start(ctx context.Context, host component.Host) error {
 		qs,
 		mqs,
 		&s.config.QueryOptions,
+		caps,
+		aiHealthCheck,
 		tm,
 		telset,
 	)
@@ -135,8 +129,45 @@ func (s *server) Start(ctx context.Context, host component.Host) error {
 		return fmt.Errorf("could not start jaeger-query: %w", err)
 	}
 
-	success = true
+	// Start the health checker only after the query server is up — a failed
+	// server start (e.g. port bind error) returns an error from Start, and
+	// the OTel collector does not call Shutdown in that case. Starting the
+	// checker first would leak its goroutine forever. The checker is given a
+	// fresh background context because the Start context is cancelled when
+	// Start returns; Shutdown stops the checker explicitly.
+	if s.aiHealth != nil {
+		s.aiHealth.Start(context.Background()) //nolint:contextcheck // intentional: checker outlives Start ctx; Shutdown stops it.
+	}
+
 	return nil
+}
+
+// buildAIHealthChecker constructs an AI health checker when the operator opted in
+// (jaeger_query.ai block present with a non-empty agent URL and a positive
+// check interval). Returns nil when AI is disabled — there's nothing to
+// check and the static handler advertises aiAssistant=false.
+func buildAIHealthChecker(opts *queryapp.QueryOptions, logger *zap.Logger) *aihealth.Checker {
+	if !opts.AI.HasValue() {
+		logger.Info("AI Assistant disabled")
+		return nil
+	}
+	aiCfg := opts.AI.Get() // cannot be nil when HasValue is true
+	if aiCfg.AgentURL == "" {
+		// MCP-only mode (enable_mcp without agent_url): there is no chat
+		// sidecar to probe, so the health checker has nothing to do.
+		logger.Info("AI Assistant health check disabled (no agent_url)")
+		return nil
+	}
+	if aiCfg.HealthCheckInterval == 0 {
+		logger.Info("AI Assistant health check disabled (health_check_interval=0)")
+		return nil
+	}
+	return &aihealth.Checker{
+		Check:    aihealth.NewACPCheck(aiCfg.AgentURL, logger),
+		Interval: aiCfg.HealthCheckInterval,
+		Timeout:  aiCfg.HealthCheckTimeout,
+		Logger:   logger,
+	}
 }
 
 func (s *server) addArchiveStorage(
@@ -197,18 +228,22 @@ func (s *server) createMetricReader(host component.Host) (metricstore.Reader, er
 	return metricsReader, nil
 }
 
-func (s *server) Shutdown(ctx context.Context) error {
-	var errs []error
+func (s *server) Shutdown(_ context.Context) error {
+	if s.aiHealth != nil {
+		s.aiHealth.Stop()
+	}
 	if s.server != nil {
-		errs = append(errs, s.server.Close())
+		return s.server.Close()
 	}
-	if s.closeTracer != nil {
-		errs = append(errs, s.closeTracer(ctx))
-	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // QueryService returns the v2 query service instance.
 func (s *server) QueryService() *querysvc.QueryService {
 	return s.qs
+}
+
+// TenancyManager returns the tenancy manager used by query endpoints.
+func (s *server) TenancyManager() *tenancy.Manager {
+	return s.tenancyManager
 }

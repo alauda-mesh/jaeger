@@ -6,6 +6,7 @@ package tracestore
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"iter"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	"github.com/jaegertracing/jaeger/internal/cache"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/clickhouse/sql"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/clickhouse/tracestore/dbmodel"
@@ -28,11 +30,16 @@ type ReaderConfig struct {
 	// MaxSearchDepth is the maximum number of trace IDs that can be returned when searching for traces.
 	// This value is used to limit the SearchDepth field in TraceQueryParams.
 	MaxSearchDepth int
+	// AttributeMetadataCacheTTL is the time-to-live for cached attribute metadata entries.
+	AttributeMetadataCacheTTL time.Duration
+	// AttributeMetadataCacheMaxSize is the maximum number of entries in the attribute metadata cache.
+	AttributeMetadataCacheMaxSize int
 }
 
 type Reader struct {
-	conn   driver.Conn
-	config ReaderConfig
+	conn          driver.Conn
+	config        ReaderConfig
+	attrMetaCache cache.Cache
 }
 
 // NewReader returns a new Reader instance that uses the given ClickHouse connection
@@ -41,7 +48,10 @@ type Reader struct {
 // The provided connection is used exclusively for reading traces, meaning it is safe
 // to enable instrumentation on the connection without risk of recursively generating traces.
 func NewReader(conn driver.Conn, cfg ReaderConfig) *Reader {
-	return &Reader{conn: conn, config: cfg}
+	attrMetaCache := cache.NewLRUWithOptions(cfg.AttributeMetadataCacheMaxSize, &cache.Options{
+		TTL: cfg.AttributeMetadataCacheTTL,
+	})
+	return &Reader{conn: conn, config: cfg, attrMetaCache: attrMetaCache}
 }
 
 func (r *Reader) GetTraces(
@@ -50,36 +60,34 @@ func (r *Reader) GetTraces(
 ) iter.Seq2[[]ptrace.Traces, error] {
 	return func(yield func([]ptrace.Traces, error) bool) {
 		for _, traceID := range traceIDs {
-			rows, err := r.conn.Query(ctx, sql.SelectSpansByTraceID, traceID.TraceID)
+			query, args := buildGetTracesQuery(traceID)
+			rows, err := r.conn.Query(ctx, query, args...)
 			if err != nil {
 				yield(nil, fmt.Errorf("failed to query trace: %w", err))
 				return
 			}
 
-			done := false
+			var errs []error
 			for rows.Next() {
-				span, err := dbmodel.ScanRow(rows)
-				if err != nil {
-					if !yield(nil, fmt.Errorf("failed to scan span row: %w", err)) {
-						done = true
-						break
-					}
-					continue
-				}
-
-				trace := dbmodel.FromRow(span)
-				if !yield([]ptrace.Traces{trace}, nil) {
-					done = true
+				span, scanErr := dbmodel.ScanRow(rows)
+				if scanErr != nil {
+					errs = append(errs, fmt.Errorf("failed to scan span row: %w", scanErr))
 					break
 				}
+				trace := dbmodel.FromRow(span)
+				if !yield([]ptrace.Traces{trace}, nil) {
+					_ = rows.Close()
+					return
+				}
 			}
-
-			if err := rows.Close(); err != nil {
-				yield(nil, fmt.Errorf("failed to close rows: %w", err))
-				return
+			if rowsErr := rows.Err(); rowsErr != nil {
+				errs = append(errs, fmt.Errorf("failed to read span rows: %w", rowsErr))
 			}
-
-			if done {
+			if closeErr := rows.Close(); closeErr != nil {
+				errs = append(errs, fmt.Errorf("failed to close rows: %w", closeErr))
+			}
+			if err := errors.Join(errs...); err != nil {
+				yield(nil, err)
 				return
 			}
 		}
@@ -91,15 +99,27 @@ func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query services: %w", err)
 	}
-	defer rows.Close()
 
-	var services []string
+	var (
+		services []string
+		errs     []error
+	)
 	for rows.Next() {
 		var service dbmodel.Service
-		if err := rows.ScanStruct(&service); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
+		if scanErr := rows.ScanStruct(&service); scanErr != nil {
+			errs = append(errs, fmt.Errorf("failed to scan row: %w", scanErr))
+			break
 		}
 		services = append(services, service.Name)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		errs = append(errs, fmt.Errorf("failed to read service rows: %w", rowsErr))
+	}
+	if closeErr := rows.Close(); closeErr != nil {
+		errs = append(errs, fmt.Errorf("failed to close rows: %w", closeErr))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
 	}
 	return services, nil
 }
@@ -118,19 +138,30 @@ func (r *Reader) GetOperations(
 	if err != nil {
 		return nil, fmt.Errorf("failed to query operations: %w", err)
 	}
-	defer rows.Close()
 
-	var operations []tracestore.Operation
+	var (
+		operations []tracestore.Operation
+		errs       []error
+	)
 	for rows.Next() {
 		var operation dbmodel.Operation
-		if err := rows.ScanStruct(&operation); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
+		if scanErr := rows.ScanStruct(&operation); scanErr != nil {
+			errs = append(errs, fmt.Errorf("failed to scan row: %w", scanErr))
+			break
 		}
-		o := tracestore.Operation{
+		operations = append(operations, tracestore.Operation{
 			Name:     operation.Name,
 			SpanKind: operation.SpanKind,
-		}
-		operations = append(operations, o)
+		})
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		errs = append(errs, fmt.Errorf("failed to read operation rows: %w", rowsErr))
+	}
+	if closeErr := rows.Close(); closeErr != nil {
+		errs = append(errs, fmt.Errorf("failed to close rows: %w", closeErr))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
 	}
 	return operations, nil
 }
@@ -151,20 +182,28 @@ func (r *Reader) FindTraces(
 			yield(nil, fmt.Errorf("failed to query traces: %w", err))
 			return
 		}
-		defer rows.Close()
 
+		var errs []error
 		for rows.Next() {
-			span, err := dbmodel.ScanRow(rows)
-			if err != nil {
-				if !yield(nil, fmt.Errorf("failed to scan span row: %w", err)) {
-					break
-				}
-				continue
+			span, scanErr := dbmodel.ScanRow(rows)
+			if scanErr != nil {
+				errs = append(errs, fmt.Errorf("failed to scan span row: %w", scanErr))
+				break
 			}
 			trace := dbmodel.FromRow(span)
 			if !yield([]ptrace.Traces{trace}, nil) {
-				break
+				_ = rows.Close()
+				return
 			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			errs = append(errs, fmt.Errorf("failed to read span rows: %w", rowsErr))
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			errs = append(errs, fmt.Errorf("failed to close rows: %w", closeErr))
+		}
+		if err := errors.Join(errs...); err != nil {
+			yield(nil, err)
 		}
 	}
 }
@@ -214,13 +253,27 @@ func (r *Reader) FindTraceIDs(
 			yield(nil, fmt.Errorf("failed to query trace IDs: %w", err))
 			return
 		}
-		defer rows.Close()
 
+		var errs []error
 		for rows.Next() {
-			traceID, err := readRowIntoTraceID(rows)
-			if !yield(traceID, err) {
+			traceID, scanErr := readRowIntoTraceID(rows)
+			if scanErr != nil {
+				errs = append(errs, scanErr)
+				break
+			}
+			if !yield(traceID, nil) {
+				_ = rows.Close()
 				return
 			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			errs = append(errs, fmt.Errorf("failed to read trace ID rows: %w", rowsErr))
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			errs = append(errs, fmt.Errorf("failed to close rows: %w", closeErr))
+		}
+		if err := errors.Join(errs...); err != nil {
+			yield(nil, err)
 		}
 	}
 }

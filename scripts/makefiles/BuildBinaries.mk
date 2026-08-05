@@ -23,28 +23,32 @@ else
 	TARGET = debug
 endif
 
+# Path to the jaeger-ui repository. Override to use a local checkout instead of the submodule:
+#   make build-ui JAEGER_UI_DIR=/path/to/jaeger-ui
+JAEGER_UI_DIR ?= jaeger-ui
+
 .PHONY: build-ui
 build-ui: cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
 
-cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz: jaeger-ui/packages/jaeger-ui/build/index.html
+cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz: $(JAEGER_UI_DIR)/packages/jaeger-ui/build/index.html
 	# do not delete dot-files
 	rm -rf cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/*
-	cp -r jaeger-ui/packages/jaeger-ui/build/* cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/
+	cp -r "$(JAEGER_UI_DIR)/packages/jaeger-ui/build/"* cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/
 	find cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual -type f | grep -v .gitignore | xargs gzip --no-name
 	# copy the timestamp for index.html.gz from the original file
-	touch -t $$(date -r jaeger-ui/packages/jaeger-ui/build/index.html '+%Y%m%d%H%M.%S') cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
+	touch -t $$(date -r "$(JAEGER_UI_DIR)/packages/jaeger-ui/build/index.html" '+%Y%m%d%H%M.%S') cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
 	ls -lF cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/
 
-jaeger-ui/packages/jaeger-ui/build/index.html:
+$(JAEGER_UI_DIR)/packages/jaeger-ui/build/index.html:
 	$(MAKE) rebuild-ui
 
 .PHONY: rebuild-ui
 rebuild-ui:
 	@echo "::group::rebuild-ui logs"
-	bash ./scripts/build/rebuild-ui.sh
-	@echo "NOTE: This target only rebuilds the UI assets inside jaeger-ui/packages/jaeger-ui/build/."
-	@echo "NOTE: To make them usable from query-service run 'make build-ui'."
+	JAEGER_UI_DIR="$(JAEGER_UI_DIR)" bash ./scripts/build/rebuild-ui.sh
 	@echo "::endgroup::"
+	rm -f cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
+	$(MAKE) build-ui JAEGER_UI_DIR="$(JAEGER_UI_DIR)"
 
 .PHONY: build-examples
 build-examples:
@@ -85,10 +89,10 @@ build-jaeger: build-ui _build-a-binary-jaeger$(SUFFIX)-$(GOOS)-$(GOARCH)
 	REAL_GOOS=$(shell GOOS= $(GO) env GOOS) ; \
 	REAL_GOARCH=$(shell GOARCH= $(GO) env GOARCH) ; \
 	if [ "$(GOOS)" == "$$REAL_GOOS" ] && [ "$(GOARCH)" == "$$REAL_GOARCH" ]; then \
-		./cmd/jaeger/jaeger-$(GOOS)-$(GOARCH) version 2>/dev/null ; \
+		./cmd/jaeger/jaeger$(SUFFIX)-$(GOOS)-$(GOARCH) version 2>/dev/null ; \
 		echo "" ; \
 		want=$(GIT_CLOSEST_TAG) ; \
-		have=$$(./cmd/jaeger/jaeger-$(GOOS)-$(GOARCH) version 2>/dev/null | jq -r .gitVersion) ; \
+		have=$$(./cmd/jaeger/jaeger$(SUFFIX)-$(GOOS)-$(GOARCH) version 2>/dev/null | jq -r .gitVersion) ; \
 		if [ "$$want" == "$$have" ]; then \
 			echo "☑️ versions match: want=$$want, have=$$have" ; \
 		else \
@@ -157,11 +161,11 @@ ifneq ($(SKIP_DEBUG_BINARIES),1)
 endif
 
 # build binaries that support DEBUG release, for one specific platform GOOS/GOARCH
+# Uses recursive make calls so that DEBUG_BINARY=1 is set at parse time,
+# ensuring SUFFIX=-debug is correctly evaluated in the ifeq conditional at the top.
 .PHONY: _build-platform-binaries-debug
-_build-platform-binaries-debug: DEBUG_BINARY=1
-_build-platform-binaries-debug: \
-	build-jaeger \
-	build-remote-storage
+_build-platform-binaries-debug:
+	$(MAKE) build-jaeger build-remote-storage GOOS=$(GOOS) GOARCH=$(GOARCH) DEBUG_BINARY=1
 
 .PHONY: build-all-platforms
 build-all-platforms:
@@ -169,3 +173,11 @@ build-all-platforms:
 	  echo "Building binaries for $$platform"; \
 	  $(MAKE) build-binaries-$$platform; \
 	done
+
+# Build Jaeger using ocb (OpenTelemetry Collector Builder).
+# This validates that the public facade packages work correctly with ocb.
+.PHONY: build-ocb
+build-ocb: $(OCB)
+	@echo "Building Jaeger with ocb"
+	$(OCB) --config cmd/jaeger/builder.yaml --skip-strict-versioning
+	@echo "✅ ocb build successful: cmd/jaeger/_build/"
