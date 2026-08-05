@@ -30,7 +30,8 @@ if git diff --cached --quiet; then
     info "版本文件无变化（可能已更新过），跳过提交"
 else
     git diff --cached --stat
-    git commit -m "chore(alauda): bump cluster plugin to ${ACP_VERSION} (jaeger ${JAEGER_VERSION})"
+    # -s（Signed-off-by）必须带：上游 dco-check 会检查 PR 中所有非 merge commit 的签名
+    git commit -s -m "chore(alauda): bump cluster plugin to ${ACP_VERSION} (jaeger ${JAEGER_VERSION})"
     info "已提交版本更新 commit"
 fi
 

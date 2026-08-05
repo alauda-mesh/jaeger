@@ -18,7 +18,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/jaegertracing/jaeger-idl/model/v1"
-	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/dbmodel"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/tracestore/core/dbmodel"
 	conventions "github.com/jaegertracing/jaeger/internal/telemetry/otelsemconv"
 )
 
@@ -82,13 +82,6 @@ func dbSpanToSpan(dbSpan *dbmodel.Span, span ptrace.Span) error {
 	spanId, err := fromDbSpanId(dbSpan.SpanID)
 	if err != nil {
 		return err
-	}
-	if dbSpan.ParentSpanID != "" {
-		parentSpanId, err := fromDbSpanId(dbSpan.ParentSpanID)
-		if err != nil {
-			return err
-		}
-		span.SetParentSpanID(parentSpanId)
 	}
 	span.SetTraceID(traceId)
 	span.SetSpanID(spanId)

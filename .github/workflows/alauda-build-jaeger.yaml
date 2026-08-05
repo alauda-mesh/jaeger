@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 name: Alauda Build Jaeger
 
 on:
@@ -11,7 +14,8 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/alauda-build-jaeger.yaml"
-      # 排除所有 Markdown 文件：纯文档改动不触发构建（与代码混合提交时仍会触发）
+      # 排除所有 Markdown 文件。注意：pull_request 的 paths 按整个 PR 的 diff 评估（而非
+      # 单次 push 改动的文件），只要 PR 整体含匹配文件，之后每次 push（含纯文档提交）都会重触发
       - "!**.md"
   push:
     tags:
@@ -125,6 +129,11 @@ jobs:
       http_proxy: ${{ vars.http_proxy }}
       https_proxy: ${{ vars.https_proxy }}
       no_proxy: ${{ vars.no_proxy }}
+      # 关闭 Go 的 VCS 版本戳：CI 为无 tag 的浅克隆，Go 1.24+ 会把主模块版本戳成
+      # v0.0.0-<日期>-<sha> 伪版本，镜像漏洞扫描将其视为低于一切修复版本的远古版本，
+      # 从而误报 CVE-2020-10750 等史前漏洞；关闭后主模块版本为 (devel)，不参与比对。
+      # 二进制真实版本另由 ldflags（GIT_CLOSEST_TAG）注入，不受影响
+      GOFLAGS: -buildvcs=false
 
     steps:
       # 二进制版本号由下方 make 命令显式传入（GIT_CLOSEST_TAG），
@@ -134,18 +143,32 @@ jobs:
         with:
           submodules: true
 
+      # self-hosted runner 的 _work 工作区跨 run 复用，checkout 只 clean 主仓库，不会清理
+      # submodule 内被 gitignore 的文件；jaeger-ui 里残留的旧版 build/ 曾被直接打进新二进制
+      - name: Clean submodule workspaces
+        run: git submodule foreach --recursive git clean -ffdx
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: 1.26
+          # 固定到具体补丁版：setup-go 默认 check-latest=false，宽松写法（如 1.26）会
+          # 直接复用 self-hosted runner 工具缓存里的旧补丁版（曾长期停在 1.26.1，
+          # stdlib 漏洞如 CVE-2026-42505 随之打进产物）。Go 发布安全补丁后需手动升级
+          # 此处版本；minor 版本须与 go.mod 一致（lint-goversion 校验）
+          go-version: 1.26.5
           cache: false
 
-      # jaeger-query 包含 UI，提前统一安装，对 es-rollover 构建无影响
-      - name: Setup Node.js version
-        uses: ./.github/actions/setup-node.js
-
+      # 不安装 Node.js：同步流程保证 jaeger-ui submodule 始终位于上游 release tag，
+      # rebuild-ui.sh 会直接下载预构建 UI 资产（curl），不会走需要 node/pnpm 的源码构建
       - name: Install CI tools
         run: make install-ci
+
+      # 显式重建 UI 资产：make 的 build-ui 依赖只认 jaeger-ui/packages/jaeger-ui/build/index.html
+      # 是否存在，残留旧文件会被直接复用；rebuild-ui 为 .PHONY，无条件按 jaeger-ui submodule
+      # 当前 release tag 重新下载预构建资产（curl，无需 node）。submodule 为浅克隆时脚本会
+      # fetch --unshallow 以识别 tag，首次运行较慢属预期
+      - name: Rebuild UI assets
+        run: make rebuild-ui
 
       # GIT_CLOSEST_TAG（二进制内嵌的版本号）显式取上游 Jaeger 版本，
       # 通过 make 命令行赋值覆盖 BuildInfo.mk 中基于 git tag 的默认推导，
@@ -158,6 +181,18 @@ jobs:
         env:
           SKIP_DEBUG_BINARIES: "1"
           LD_EXTRAFLAGS: ${{ vars.LD_EXTRAFLAGS }}
+
+      # 防御性校验：比对二进制内嵌 UI 资产名单（embed 路径 actual/ 下均带 .gz 后缀）与
+      # jaeger-ui 构建产物，拦截"陈旧残留被打进二进制"这类构建成功但产物错误的问题。
+      # 内嵌名单在二进制中无分隔符连续存储，正则字符类不能含 /（否则贪婪匹配跨条目）；
+      # 按扁平 static 目录设计，若上游资产出现子目录会在此显式失败、提醒调整
+      - name: Verify embedded UI assets
+        run: |
+          BIN="cmd/jaeger/jaeger-linux-${{ matrix.arch }}"
+          grep -aq 'actual/index.html.gz' "$BIN"
+          diff <(grep -aoE 'actual/static/[A-Za-z0-9._-]+\.gz' "$BIN" | sed 's#^actual/static/##; s#\.gz$##' | sort -u) \
+               <(cd jaeger-ui/packages/jaeger-ui/build/static && find . -type f | sed 's#^\./##' | sort)
+          echo "内嵌 UI 资产与 jaeger-ui/packages/jaeger-ui/build/static 一致"
 
       - name: Build es-rollover binary
         run: |

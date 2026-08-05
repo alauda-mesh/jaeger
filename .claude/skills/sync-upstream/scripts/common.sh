@@ -19,7 +19,8 @@ cd "$REPO_ROOT"
 # shellcheck disable=SC2034  # 供 source 本文件的脚本使用
 STATE_FILE="$REPO_ROOT/.git/sync-upstream-state.env"
 
-info() { printf '[sync-upstream] %s\n' "$*"; }
+# 输出带时间戳：长驻脚本（watch-pipeline.sh）被外部终止时可据此判断死亡时刻
+info() { printf '[sync-upstream %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf '[sync-upstream] 错误：%s\n' "$*" >&2; exit 1; }
 
 # 校验上游 release tag 格式（vX.Y.Z）
@@ -82,6 +83,9 @@ post_merge_finalize() {
     git submodule update --init --recursive
     info "submodule 状态："
     git submodule status | sed 's/^/  /'
+    # 注意：git submodule status 的描述只认 annotated tag，jaeger-ui 的 release tag 是
+    # lightweight，会显示成 v1.10.0-NNN-g... 之类的误导值；以下面 --tags 的结果为准
+    info "jaeger-ui 实际位置（describe --tags）：$(git -C jaeger-ui describe --tags --always 2>/dev/null || echo 未知)"
     local merged_count
     merged_count=$(git rev-list --count "origin/${target}..refs/tags/${tag}^{commit}" 2>/dev/null || echo "?")
     info "本次合入的上游提交数（相对 origin/${target}）：${merged_count}"

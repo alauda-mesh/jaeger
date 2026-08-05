@@ -38,7 +38,8 @@ type QueryServiceOptions struct {
 // StorageCapabilities is a feature flag for query service
 type StorageCapabilities struct {
 	ArchiveStorage bool `json:"archiveStorage"`
-	// TODO: Maybe add metrics Storage here
+	MetricsStorage bool `json:"metricsStorage"`
+	// Potential future extensions:
 	// SupportRegex     bool
 	// SupportTagFilter bool
 }
@@ -157,6 +158,45 @@ func (qs QueryService) FindTraces(
 	}
 }
 
+// FindTraceSummaries searches for traces matching the query and returns an iterator
+// of lightweight summary information. If the underlying storage implements
+// tracestore.SummaryReader, it delegates to that; otherwise it falls back to
+// FindTraces and computes summaries from the full trace data.
+//
+// A SummaryReader implementation that does not support the operation should yield
+// errors.ErrUnsupported (wrapped with %w) as the first error; FindTraceSummaries
+// will fall back transparently to computeSummaries.
+//
+// The iterator is single-use: once consumed, it cannot be used again.
+func (qs QueryService) FindTraceSummaries(
+	ctx context.Context,
+	query TraceQueryParams,
+) iter.Seq2[[]tracestore.TraceSummary, error] {
+	if sr, ok := qs.traceReader.(tracestore.SummaryReader); ok {
+		return func(yield func([]tracestore.TraceSummary, error) bool) {
+			for batch, err := range sr.FindTraceSummaries(ctx, query.TraceQueryParams) {
+				if err != nil {
+					if errors.Is(err, errors.ErrUnsupported) {
+						// Fall back to FindTraces + aggregation.
+						for b, e := range computeSummaries(qs.traceReader.FindTraces(ctx, query.TraceQueryParams), qs.adjuster) {
+							if !yield(b, e) {
+								return
+							}
+						}
+						return
+					}
+					yield(nil, err)
+					return
+				}
+				if !yield(batch, nil) {
+					return
+				}
+			}
+		}
+	}
+	return computeSummaries(qs.traceReader.FindTraces(ctx, query.TraceQueryParams), qs.adjuster)
+}
+
 // ArchiveTrace archives a trace specified by the given query parameters.
 // If the ArchiveTraceWriter is not configured, it returns
 // an error indicating that there is no archive span storage available.
@@ -196,16 +236,6 @@ func (qs QueryService) GetDependencies(ctx context.Context, endTs time.Time, loo
 		StartTime: endTs.Add(-lookback),
 		EndTime:   endTs,
 	})
-}
-
-func (qs QueryService) GetCapabilities() StorageCapabilities {
-	return StorageCapabilities{
-		ArchiveStorage: qs.options.hasArchiveStorage(),
-	}
-}
-
-func (opts *QueryServiceOptions) hasArchiveStorage() bool {
-	return opts.ArchiveTraceReader != nil && opts.ArchiveTraceWriter != nil
 }
 
 func (qs QueryService) receiveTraces(

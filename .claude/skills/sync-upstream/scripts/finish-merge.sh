@@ -32,7 +32,8 @@ if [ -n "$UNMERGED" ]; then
 fi
 
 if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-    git commit --no-edit
+    # --signoff 满足上游 DCO 惯例（merge commit 虽被 dco 检查豁免，统一带上）
+    git commit --no-edit --signoff
     info "合并 commit 已创建（新 commit，未使用 amend）"
 else
     info "无进行中的合并（可能已提交过合并 commit），继续收尾"
