@@ -129,6 +129,11 @@ jobs:
       http_proxy: ${{ vars.http_proxy }}
       https_proxy: ${{ vars.https_proxy }}
       no_proxy: ${{ vars.no_proxy }}
+      # 关闭 Go 的 VCS 版本戳：CI 为无 tag 的浅克隆，Go 1.24+ 会把主模块版本戳成
+      # v0.0.0-<日期>-<sha> 伪版本，镜像漏洞扫描将其视为低于一切修复版本的远古版本，
+      # 从而误报 CVE-2020-10750 等史前漏洞；关闭后主模块版本为 (devel)，不参与比对。
+      # 二进制真实版本另由 ldflags（GIT_CLOSEST_TAG）注入，不受影响
+      GOFLAGS: -buildvcs=false
 
     steps:
       # 二进制版本号由下方 make 命令显式传入（GIT_CLOSEST_TAG），
@@ -146,7 +151,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: 1.26
+          # 固定到具体补丁版：setup-go 默认 check-latest=false，宽松写法（如 1.26）会
+          # 直接复用 self-hosted runner 工具缓存里的旧补丁版（曾长期停在 1.26.1，
+          # stdlib 漏洞如 CVE-2026-42505 随之打进产物）。Go 发布安全补丁后需手动升级
+          # 此处版本；minor 版本须与 go.mod 一致（lint-goversion 校验）
+          go-version: 1.26.5
           cache: false
 
       # 不安装 Node.js：同步流程保证 jaeger-ui submodule 始终位于上游 release tag，

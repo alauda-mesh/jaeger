@@ -22,6 +22,10 @@ source "$SCRIPT_DIR/common.sh"
 TAG="$1"
 validate_tag "$TAG"
 
+# 与 CI 一致：关闭 Go 的 VCS 版本戳，避免主模块被戳成 v0.0.0 等伪版本、
+# 被镜像漏洞扫描误判为远古版本（真实版本由 ldflags 的 GIT_CLOSEST_TAG 注入）
+export GOFLAGS="-buildvcs=false"
+
 GOOS=$(go env GOOS)
 GOARCH=$(go env GOARCH)
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sync-upstream-build.XXXXXX")
