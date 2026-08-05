@@ -92,13 +92,16 @@ bash "$SKILL_DIR/scripts/create-pr.sh" <上游tag> <目标分支> <PR正文文�
 
 ## 步骤 5：监控 PR 流水线
 
-`Alauda Build Jaeger` 全流程（二进制 → 多架构镜像 → chart）通常需要 10～30 分钟，**必须用后台方式运行**（Bash 工具 `run_in_background: true`）：
+`Alauda Build Jaeger` 全流程（二进制 → 多架构镜像 → chart）通常需要 10～30 分钟。**不要用 Bash 后台方式长驻运行 watch-pipeline.sh**——实测含 `sleep` 轮询的长驻后台 Bash 会被执行环境无预警终止（v2.20.0 同步时连续两次在约 1 分钟后被杀，输出戛然而止且无退出码）。正确姿势分两步：
+
+1. 用 **Monitor 工具**（persistent: true）跑轻量轮询等收敛，每 60s 查一次，仅状态变化时发事件，Alauda run completed 且全部 checks 无 pending（总数 ≥10，上游 CI 分阶段注册）时输出 `CONVERGED` 并退出。注意事件要覆盖成功与失败所有终态；
+2. 收到收敛事件后**前台**运行 watch-pipeline.sh 做结果解析（此时一切已 completed，脚本一次跑完不长驻）：
 
 ```bash
 bash "$SKILL_DIR/scripts/watch-pipeline.sh" <PR编号>
 ```
 
-脚本先等 `Alauda Build Jaeger` 完成（成功时输出本次 PR 构建的镜像与 chart 地址），再等全部 PR checks 收敛（默认总超时 60 分钟，可用环境变量 `WATCH_TIMEOUT_MINUTES` 调整）。按退出结果处理：
+脚本先确认 `Alauda Build Jaeger` 结论（成功时输出本次 PR 构建的镜像与 chart 地址），再核对全部 PR checks（总超时 60 分钟，环境变量 `WATCH_TIMEOUT_MINUTES` 可调）。按退出结果处理：
 
 - **PIPELINE_SUCCESS（退出码 0）**：把输出的镜像/chart 地址与 WARN 项纳入最终汇报。
 - **PIPELINE_FAILED（退出码 2）**：输出已附失败 job 与日志摘要，分析失败原因：

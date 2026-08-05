@@ -19,7 +19,8 @@ cd "$REPO_ROOT"
 # shellcheck disable=SC2034  # 供 source 本文件的脚本使用
 STATE_FILE="$REPO_ROOT/.git/sync-upstream-state.env"
 
-info() { printf '[sync-upstream] %s\n' "$*"; }
+# 输出带时间戳：长驻脚本（watch-pipeline.sh）被外部终止时可据此判断死亡时刻
+info() { printf '[sync-upstream %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf '[sync-upstream] 错误：%s\n' "$*" >&2; exit 1; }
 
 # 校验上游 release tag 格式（vX.Y.Z）
