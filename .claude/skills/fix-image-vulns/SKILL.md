@@ -32,7 +32,7 @@ disable-model-invocation: true
 - workflow env 里的 `GOFLAGS: -buildvcs=false` 用于消除主模块伪版本导致的 Trivy 误报——若扫描结果出现 `github.com/jaegertracing/jaeger` 自身的史前 CVE，先检查该 flag 是否还在，而不是去改依赖。
 - 修复基线 = 主工作区**当前检出分支**（通常 main）。修复在独立 worktree 中进行，不打扰主工作区。
 - **改 worktree 里的文件一律用绝对路径**：Bash 的工作目录在多次调用间持久保留，跑完脚本后可能停在 worktree 也可能在主仓库根，相对路径会写错工作区（曾把 worktree 里已改好的文件用主工作区的原版覆盖掉）。用户附带要求的文档 / skill 改动同样落在 worktree 的修复分支上，且必须在建 PR 前 commit（create-pr.sh 要求 worktree 干净），commit 与漏洞修复分开。
-- **PR 检查分层**：PR 必须让 **Alauda Build Jaeger** 流水线成功（产出回归扫描用的新镜像）；PR 上同时会跑社区 CI（lint/test/coverage 等），在 fork 上属 best-effort——`Coverage Gate`、`Metrics Comparison` 历史上在 fork PR 就失败、不阻塞 merge，但 **dco-check 应保持绿**（本 skill 的 commit 一律 `git commit -s`），其余失败项要分析是否由本次升级引入并如实报告。
+- **PR 检查分层**：PR 必须让 **Alauda Build Jaeger** 流水线成功（产出回归扫描用的新镜像）；PR 上同时会跑社区 CI（lint/test/coverage 等），在 fork 上属 best-effort——`Coverage Gate`、`Metrics Comparison`、`stage3-seq / dependency-review`（fork 未启用 Dependency graph，报 `Dependency review is not supported on this repository`，与依赖升级内容无关）历史上在 fork PR 就失败、不阻塞 merge，但 **dco-check 应保持绿**（本 skill 的 commit 一律 `git commit -s`），其余失败项要分析是否由本次升级引入并如实报告。注意社区 CI 分 stage 顺序执行，前一个 stage 挂掉时后面的 stage 根本不会跑——所以某个 check 这次才出现失败，可能只是上次被前置失败挡住了，不等于本次修复引入。
 - git 规矩：commit 一律 `git commit -s`（DCO），信息格式 `type(scope): Capitalized`；**禁止 amend**，一律新建 commit；**不加** Co-Authored-By / Claude-Session 尾注。gh 命令必须显式 `--repo alauda-mesh/jaeger`（脚本已内置），禁止推社区上游。
 - 维护本 skill：`$SKILL_DIR` 下的 `.sh` 同样受仓库 `make lint-license` 校验，新增脚本须先跑 `./scripts/lint/updateLicense.py <文件>` 补标准 license 头再提交，否则 main 与所有 PR 的社区 CI lint 全红。
 - 修复轮次上限 **3 轮**（首轮 + 回归后最多再修 2 次），修不完就如实汇报。
