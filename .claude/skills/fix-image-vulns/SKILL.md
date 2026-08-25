@@ -31,6 +31,7 @@ disable-model-invocation: true
 - **go 版本 pin 机制**：`.github/workflows/alauda-build-jaeger.yaml` 中 setup-go 的 `go-version: X.Y.Z`（固定补丁版）决定编译用的 go 版本。修 stdlib 漏洞就是升这个 pin。升级策略：优先当前 minor 内的 patch；patch 满足不了修复版本要求时才跨 minor，此时须同步升 `go.mod` 的 go directive 等（CI 的 lint-goversion 按 go.mod 校验所有 workflow 的 minor 一致性，脚本会输出配套修改清单），并**在最终报告中着重强调**。pin 附近的注释记录上次 pin 的缘由，升级后要一并改写。
 - workflow env 里的 `GOFLAGS: -buildvcs=false` 用于消除主模块伪版本导致的 Trivy 误报——若扫描结果出现 `github.com/jaegertracing/jaeger` 自身的史前 CVE，先检查该 flag 是否还在，而不是去改依赖。
 - 修复基线 = 主工作区**当前检出分支**（通常 main）。修复在独立 worktree 中进行，不打扰主工作区。
+- **改 worktree 里的文件一律用绝对路径**：Bash 的工作目录在多次调用间持久保留，跑完脚本后可能停在 worktree 也可能在主仓库根，相对路径会写错工作区（曾把 worktree 里已改好的文件用主工作区的原版覆盖掉）。用户附带要求的文档 / skill 改动同样落在 worktree 的修复分支上，且必须在建 PR 前 commit（create-pr.sh 要求 worktree 干净），commit 与漏洞修复分开。
 - **PR 检查分层**：PR 必须让 **Alauda Build Jaeger** 流水线成功（产出回归扫描用的新镜像）；PR 上同时会跑社区 CI（lint/test/coverage 等），在 fork 上属 best-effort——`Coverage Gate`、`Metrics Comparison` 历史上在 fork PR 就失败、不阻塞 merge，但 **dco-check 应保持绿**（本 skill 的 commit 一律 `git commit -s`），其余失败项要分析是否由本次升级引入并如实报告。
 - git 规矩：commit 一律 `git commit -s`（DCO），信息格式 `type(scope): Capitalized`；**禁止 amend**，一律新建 commit；**不加** Co-Authored-By / Claude-Session 尾注。gh 命令必须显式 `--repo alauda-mesh/jaeger`（脚本已内置），禁止推社区上游。
 - 维护本 skill：`$SKILL_DIR` 下的 `.sh` 同样受仓库 `make lint-license` 校验，新增脚本须先跑 `./scripts/lint/updateLicense.py <文件>` 补标准 license 头再提交，否则 main 与所有 PR 的社区 CI lint 全红。
