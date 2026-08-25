@@ -1,18 +1,36 @@
 # Alauda's Jaeger Distribution
 
-## 版本更新
-
-1. 同步上游新版本（tag）代码：更新 `main` 分支以跟踪上游 [jaegertracing/jaeger](https://github.com/jaegertracing/jaeger) 最新发布版本。
-2. 同步后更新 [jaeger-cluster-plugin/Chart.yaml](./jaeger-cluster-plugin/Chart.yaml) 的 `appVersion` 为新的上游版本（如 `2.17.0`），CI 流水线以该字段作为 Jaeger 版本的事实源。
-
 ## 版本升级
 
-上述流程已封装为 Claude Code skill [sync-upstream](../.claude/skills/sync-upstream/SKILL.md)，自动完成：merge 上游 tag（含 idl / jaeger-ui submodule 对齐与冲突处理）→ 本地构建验证 3 个二进制 → 更新集群插件 Chart 版本 → 创建 PR 到 alauda-mesh/jaeger 并监控流水线，最后汇报并提醒手动同步 oauth2-proxy 镜像。
+跟踪上游 [jaegertracing/jaeger](https://github.com/jaegertracing/jaeger) 的新发布版本（tag）。
+
+### 通过 skill 升级（推荐）
+
+Claude Code skill [sync-upstream](../.claude/skills/sync-upstream/SKILL.md) 自动完成：merge 上游 tag（含 idl / jaeger-ui submodule 对齐与冲突处理）→ 本地构建验证 3 个二进制 → 更新集群插件 Chart 版本 → 创建 PR 到 alauda-mesh/jaeger 并监控流水线，最后汇报并提醒手动同步 oauth2-proxy 镜像。
 
 在 Claude Code 中显式调用，参数依次为：上游 tag、目标分支、ACP 产品版本（即集群插件 chart 版本）：
 
 ```text
 /sync-upstream v2.20.0 main v2.2.0-r0
+```
+
+### 手动升级
+
+1. 同步上游新版本（tag）代码：更新 `main` 分支以跟踪上游最新发布版本。
+2. 同步后更新 [jaeger-cluster-plugin/Chart.yaml](./jaeger-cluster-plugin/Chart.yaml) 的 `appVersion` 为新的上游版本（如 `2.17.0`），CI 流水线以该字段作为 Jaeger 版本的事实源。
+
+## 漏洞修复
+
+Claude Code skill [fix-image-vulns](../.claude/skills/fix-image-vulns/SKILL.md) 修复流水线所构建镜像的安全漏洞，自动完成：解析待扫描镜像清单 → 调内网扫描服务扫描并按修复责任分类 → 修复（go stdlib 漏洞升 workflow 的 `go-version`，依赖库漏洞升 `go.mod`）→ 本地构建验证 → 创建 PR 并监控流水线 → 回归扫描（最多 3 轮）。
+
+修复责任：3 个 Jaeger 镜像的 go 漏洞负责修复；oauth2-proxy 镜像与基础镜像的 os 级漏洞只扫描报告、不在该 skill 内修复（前者按 [Oauth2 Proxy 镜像更新](#oauth2-proxy-镜像更新) 同步新版本解决）。
+
+在 Claude Code 中显式调用，参数为一个或多个流水线 run（ID 或 URL，须为成功的 Alauda Build Jaeger run）或完整镜像地址，两类可混用：
+
+```text
+/fix-image-vulns 31018260981
+/fix-image-vulns https://github.com/alauda-mesh/jaeger/actions/runs/31018260981
+/fix-image-vulns build-harbor.alauda.cn/asm/jaeger:2.20.0-2.1.0-rc.1
 ```
 
 ## Release
