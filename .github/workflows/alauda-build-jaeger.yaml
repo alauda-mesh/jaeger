@@ -153,9 +153,12 @@ jobs:
         with:
           # 固定到具体补丁版：setup-go 默认 check-latest=false，宽松写法（如 1.26）会
           # 直接复用 self-hosted runner 工具缓存里的旧补丁版（曾长期停在 1.26.1，
-          # stdlib 漏洞如 CVE-2026-42505 随之打进产物）。Go 发布安全补丁后需手动升级
-          # 此处版本；minor 版本须与 go.mod 一致（lint-goversion 校验）
-          go-version: 1.26.5
+          # stdlib 漏洞随之打进产物）。Go 发布安全补丁后需手动升级此处版本；
+          # minor 版本须与 go.mod 一致（lint-goversion 校验）。
+          # 本次 1.26.5 → 1.26.7：修复 stdlib CVE-2026-33818、CVE-2026-39821、
+          # CVE-2026-46600、CVE-2026-56853、CVE-2026-56858、CVE-2026-56859、
+          # CVE-2026-56860、CVE-2026-56862
+          go-version: 1.26.7
           cache: false
 
       # 不安装 Node.js：同步流程保证 jaeger-ui submodule 始终位于上游 release tag，
